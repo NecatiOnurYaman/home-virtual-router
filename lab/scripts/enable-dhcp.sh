@@ -11,16 +11,22 @@ require_lab_environment
 require_root
 load_topology_config
 validate_topology_names
-for required_command in ip nft sysctl dnsmasq dhclient systemctl getent; do
+for required_command in ip nft sysctl dnsmasq dhclient systemctl getent install; do
   command -v "$required_command" >/dev/null 2>&1 || die "$required_command is required"
 done
 require_r2_topology
 require_r4_nat_state
 filter_rules_exist || die "exact R5 firewall state is required before DHCP"
 resolve_dnsmasq_identity
+dhclient_source="$(command -v dhclient)"
+case "$dhclient_source" in
+  /sbin/dhclient|/usr/sbin/dhclient) ;;
+  *) die "dhclient resolved outside the trusted system sbin paths: $dhclient_source" ;;
+esac
 
 dnsmasq_dhcp_running && die "project DHCP server is already running"
 dhclient_running && die "project DHCP client is already running"
+[ -x "$DHCLIENT_HOOK_SOURCE" ] || die "project dhclient hook is not executable: $DHCLIENT_HOOK_SOURCE"
 for project_pid_file in "$DNSMASQ_PID_FILE" "$DHCLIENT_PID_FILE"; do
   if stale_pid="$(read_project_pid "$project_pid_file" 2>/dev/null)" && kill -0 "$stale_pid" 2>/dev/null; then
     die "project PID file $project_pid_file references an unexpected live process"
@@ -47,7 +53,7 @@ snapshot_r6_host_state
 rollback_dhcp_enable() {
   local status=$? cleanup_safe=1
   trap - EXIT INT TERM
-  stop_project_process_if_present "$DHCLIENT_PID_FILE" dhclient "$CLIENT_INTERFACE" || {
+  stop_project_process_if_present "$DHCLIENT_PID_FILE" "$DHCLIENT_RUNTIME_BINARY" "$CLIENT_INTERFACE" || {
     status=1
     cleanup_safe=0
   }
@@ -66,9 +72,17 @@ rollback_dhcp_enable() {
 trap rollback_dhcp_enable EXIT INT TERM
 
 mkdir -p "$DHCP_RUNTIME_DIR"
-chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DHCP_RUNTIME_DIR"
+chown 0:0 "$DHCP_RUNTIME_DIR"
 chmod 0755 "$DHCP_RUNTIME_DIR"
-rm -f "$DNSMASQ_PID_FILE" "$DHCLIENT_PID_FILE" "$DHCP_CLIENT_STATE_FILE" "$DHCP_CLIENT_RESOLV_FILE"
+install -d -o 0 -g 0 -m 0700 "$DHCLIENT_RUNTIME_DIR"
+install -o 0 -g 0 -m 0755 "$dhclient_source" "$DHCLIENT_RUNTIME_BINARY"
+install -o 0 -g 0 -m 0755 "$DHCLIENT_HOOK_SOURCE" "$DHCLIENT_HOOK"
+rm -f "$DNSMASQ_PID_FILE" "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE" \
+  "$DHCP_CLIENT_STATE_FILE" "$DHCP_CLIENT_RESOLV_FILE"
+touch "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE"
+chown 0:0 "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE"
+chmod 0600 "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE"
+rm -f "$DHCLIENT_PID_FILE"
 touch "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE"
 chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE"
 render_dnsmasq_config
@@ -80,11 +94,12 @@ dnsmasq_dhcp_running || die "project dnsmasq DHCP process did not start"
 ip -n "$CLIENT_NAMESPACE" route del default via "$ROUTER_LAN" dev "$CLIENT_INTERFACE"
 ip -n "$CLIENT_NAMESPACE" address del "$CLIENT_ADDRESS/$lan_prefix" dev "$CLIENT_INTERFACE"
 
-ip netns exec "$CLIENT_NAMESPACE" dhclient -4 -1 -v \
+ip netns exec "$CLIENT_NAMESPACE" "$DHCLIENT_RUNTIME_BINARY" -4 -1 -v \
   -pf "$DHCLIENT_PID_FILE" -lf "$DHCLIENT_LEASE_FILE" \
   -cf "$DHCLIENT_CONFIG" -sf "$DHCLIENT_HOOK" "$CLIENT_INTERFACE"
 
 dynamic_address="$(client_dhcp_address)" || die "client did not obtain exactly one /24 address from the DHCP pool"
+client_static_address_exists && die "legacy static client address remains after DHCP acquisition"
 client_default_route_exists || die "client did not learn the default route via $ROUTER_LAN"
 [ "$(cat "$DHCP_CLIENT_RESOLV_FILE" 2>/dev/null)" = "nameserver $DHCP_DNS_SERVER" ] ||
   die "client did not record the advertised DNS server"

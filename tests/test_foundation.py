@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+import stat
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -428,7 +429,10 @@ class DhcpStageTests(unittest.TestCase):
             'ip netns exec "$ROUTER_NAMESPACE" dnsmasq --conf-file="$DNSMASQ_CONFIG"',
             self.enable,
         )
-        self.assertIn('ip netns exec "$CLIENT_NAMESPACE" dhclient -4 -1 -v', self.enable)
+        self.assertIn(
+            'ip netns exec "$CLIENT_NAMESPACE" "$DHCLIENT_RUNTIME_BINARY" -4 -1 -v',
+            self.enable,
+        )
         self.assertNotIn("systemctl start", self.enable + self.disable)
         self.assertNotIn("systemctl stop", self.enable + self.disable)
 
@@ -497,7 +501,7 @@ test ! -e "{pid_file}"
             self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_disable_allows_missing_r6_binaries_and_limits_cleanup(self) -> None:
-        dependency_loop = self.disable.split("done", 1)[0]
+        dependency_loop = self.disable.split("for required_command in nft", 1)[1].split("done", 1)[0]
         self.assertNotIn(" dnsmasq", dependency_loop)
         self.assertNotIn(" dhclient", dependency_loop)
         self.assertIn("stop_project_process_if_present", self.disable)
@@ -506,6 +510,88 @@ test ! -e "{pid_file}"
         self.assertIn('"$DNSMASQ_CONFIG" "$DNSMASQ_PID_FILE"', common)
         self.assertNotIn('rm -rf', self.disable + common)
         self.assertIn('address replace "$CLIENT_ADDRESS/$lan_prefix"', self.disable)
+
+    def test_dhclient_runtime_is_private_and_writable_by_root(self) -> None:
+        self.assertIn('install -d -o 0 -g 0 -m 0700 "$DHCLIENT_RUNTIME_DIR"', self.enable)
+        self.assertIn('touch "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE"', self.enable)
+        self.assertIn('chown 0:0 "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE"', self.enable)
+        self.assertIn('chmod 0600 "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE"', self.enable)
+        self.assertNotIn("0777", self.enable + TOPOLOGY_COMMON.read_text())
+
+    def test_runtime_hook_and_client_binary_are_executable_copies(self) -> None:
+        mode = DHCLIENT_HOOK.stat().st_mode
+        self.assertTrue(mode & stat.S_IXUSR)
+        self.assertTrue(os.access(DHCLIENT_HOOK, os.X_OK))
+        self.assertIn(
+            'install -o 0 -g 0 -m 0755 "$DHCLIENT_HOOK_SOURCE" "$DHCLIENT_HOOK"',
+            self.enable,
+        )
+        self.assertIn(
+            'install -o 0 -g 0 -m 0755 "$dhclient_source" "$DHCLIENT_RUNTIME_BINARY"',
+            self.enable,
+        )
+        self.assertIn('/sbin/dhclient|/usr/sbin/dhclient)', self.enable)
+        common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        self.assertIn('readonly DHCLIENT_RUNTIME_DIR="$DHCP_RUNTIME_DIR/client"', common)
+
+    def test_success_requires_actual_dynamic_state_without_static_address(self) -> None:
+        dynamic_check = self.enable.index('dynamic_address="$(client_dhcp_address)"')
+        static_check = self.enable.index("client_static_address_exists && die")
+        route_check = self.enable.index("client_default_route_exists || die", dynamic_check)
+        resolver_check = self.enable.index('cat "$DHCP_CLIENT_RESOLV_FILE"', dynamic_check)
+        lease_check = self.enable.index('"$DNSMASQ_LEASE_FILE" || die', dynamic_check)
+        self.assertLess(dynamic_check, static_check)
+        self.assertLess(static_check, route_check)
+        self.assertLess(route_check, resolver_check)
+        self.assertLess(resolver_check, lease_check)
+
+    def test_host_interface_snapshot_ignores_lifetimes(self) -> None:
+        common = TOPOLOGY_COMMON
+        before = "2: eth0    inet 192.0.2.20/24 brd 192.0.2.255 scope global dynamic eth0 valid_lft 300sec preferred_lft 300sec"
+        after = "2: eth0    inet 192.0.2.20/24 brd 192.0.2.255 scope global dynamic eth0 valid_lft 250sec preferred_lft 250sec"
+        command = f'''source "{common}"; normalize_host_ipv4_state'''
+        first = subprocess.run(["bash", "-c", command], input=before, text=True, capture_output=True, check=True)
+        second = subprocess.run(["bash", "-c", command], input=after, text=True, capture_output=True, check=True)
+        self.assertEqual(first.stdout, second.stdout)
+
+    def test_host_ip_and_interface_changes_remain_visible(self) -> None:
+        common = TOPOLOGY_COMMON
+        normalize_ip = f'''source "{common}"; normalize_host_ipv4_state'''
+        old_ip = subprocess.run(
+            ["bash", "-c", normalize_ip], input="2: eth0 inet 192.0.2.20/24 scope global eth0\n",
+            text=True, capture_output=True, check=True,
+        ).stdout
+        new_ip = subprocess.run(
+            ["bash", "-c", normalize_ip], input="2: eth0 inet 192.0.2.21/24 scope global eth0\n",
+            text=True, capture_output=True, check=True,
+        ).stdout
+        self.assertNotEqual(old_ip, new_ip)
+
+        normalize_link = f'''source "{common}"; normalize_host_link_state'''
+        links = subprocess.run(
+            ["bash", "-c", normalize_link],
+            input="2: eth0: <UP> mtu 1500 link/ether 02:00:00:00:00:01\n",
+            text=True, capture_output=True, check=True,
+        ).stdout
+        renamed = subprocess.run(
+            ["bash", "-c", normalize_link],
+            input="2: enp0s1: <UP> mtu 1500 link/ether 02:00:00:00:00:01\n",
+            text=True, capture_output=True, check=True,
+        ).stdout
+        self.assertNotEqual(links, renamed)
+        self.assertNotEqual(links, "")
+
+    def test_default_route_check_remains_separate_and_exact(self) -> None:
+        common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        self.assertIn('verify_default_route_unchanged "$R6_HOST_DEFAULT_ROUTE"', common)
+        self.assertIn('[ "$before" = "$after" ] || die "the Ubuntu VM default route changed unexpectedly"', common)
+
+    def test_disable_handles_completely_absent_topology_before_r2_requirement(self) -> None:
+        absent_branch = self.disable.index('if ! namespace_exists "$UPSTREAM_NAMESPACE"')
+        topology_requirement = self.disable.index("require_r2_topology")
+        self.assertLess(absent_branch, topology_requirement)
+        self.assertIn("namespace cleanup was unnecessary", self.disable)
+        self.assertIn("remove_project_dhcp_files", self.disable[absent_branch:topology_requirement])
 
 
 if __name__ == "__main__":

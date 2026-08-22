@@ -10,14 +10,17 @@ readonly DHCP_RUNTIME_DIR="/run/home-virtual-router/dhcp"
 readonly DNSMASQ_CONFIG_TEMPLATE="$HVR_REPO_DIR/router/config/dnsmasq-dhcp.conf.template"
 readonly DNSMASQ_CONFIG="$DHCP_RUNTIME_DIR/dnsmasq.conf"
 readonly DHCLIENT_CONFIG="$HVR_REPO_DIR/router/config/dhclient.conf"
-readonly DHCLIENT_HOOK="$HVR_REPO_DIR/router/scripts/dhclient-lab-hook.sh"
+readonly DHCLIENT_HOOK_SOURCE="$HVR_REPO_DIR/router/scripts/dhclient-lab-hook.sh"
+readonly DHCLIENT_RUNTIME_DIR="$DHCP_RUNTIME_DIR/client"
+readonly DHCLIENT_RUNTIME_BINARY="$DHCLIENT_RUNTIME_DIR/dhclient"
+readonly DHCLIENT_HOOK="$DHCLIENT_RUNTIME_DIR/dhclient-lab-hook.sh"
 readonly DNSMASQ_PID_FILE="$DHCP_RUNTIME_DIR/dnsmasq.pid"
 readonly DNSMASQ_LEASE_FILE="$DHCP_RUNTIME_DIR/dnsmasq.leases"
 readonly DNSMASQ_LOG_FILE="$DHCP_RUNTIME_DIR/dnsmasq.log"
-readonly DHCLIENT_PID_FILE="$DHCP_RUNTIME_DIR/dhclient.pid"
-readonly DHCLIENT_LEASE_FILE="$DHCP_RUNTIME_DIR/dhclient.leases"
-readonly DHCP_CLIENT_STATE_FILE="$DHCP_RUNTIME_DIR/client-state.env"
-readonly DHCP_CLIENT_RESOLV_FILE="$DHCP_RUNTIME_DIR/client-resolv.conf"
+readonly DHCLIENT_PID_FILE="$DHCLIENT_RUNTIME_DIR/dhclient.pid"
+readonly DHCLIENT_LEASE_FILE="$DHCLIENT_RUNTIME_DIR/dhclient.leases"
+readonly DHCP_CLIENT_STATE_FILE="$DHCLIENT_RUNTIME_DIR/client-state.env"
+readonly DHCP_CLIENT_RESOLV_FILE="$DHCLIENT_RUNTIME_DIR/client-resolv.conf"
 
 # These variables are populated only from an allowlist after Python validation.
 UPSTREAM_SUBNET=""
@@ -206,8 +209,29 @@ capture_host_dnsmasq_service_state() {
 }
 
 capture_host_interface_state() {
-  ip -o link show
-  ip -o -4 address show
+  printf '[links]\n'
+  ip -o link show | normalize_host_link_state
+  printf '[ipv4]\n'
+  ip -o -4 address show | normalize_host_ipv4_state
+}
+
+normalize_host_link_state() {
+  awk -F ': ' '
+    {
+      name = $2
+      sub(/@.*/, "", name)
+      mac = "-"
+      count = split($3, fields, " ")
+      for (i = 1; i <= count; i++) {
+        if (fields[i] == "link/ether") mac = fields[i + 1]
+      }
+      print name, mac
+    }
+  ' | sort
+}
+
+normalize_host_ipv4_state() {
+  awk '{print $2, $4}' | sort
 }
 
 verify_snapshot_unchanged() {
@@ -371,7 +395,8 @@ remove_project_dhcp_files() {
   rm -f -- \
     "$DNSMASQ_CONFIG" "$DNSMASQ_PID_FILE" "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE" \
     "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE" "$DHCP_CLIENT_STATE_FILE" \
-    "$DHCP_CLIENT_RESOLV_FILE"
+    "$DHCP_CLIENT_RESOLV_FILE" "$DHCLIENT_HOOK" "$DHCLIENT_RUNTIME_BINARY"
+  rmdir "$DHCLIENT_RUNTIME_DIR" 2>/dev/null || true
   rmdir "$DHCP_RUNTIME_DIR" 2>/dev/null || true
 }
 
@@ -384,7 +409,7 @@ dnsmasq_dhcp_running() {
 dhclient_running() {
   local pid
   pid="$(read_project_pid "$DHCLIENT_PID_FILE")" || return 1
-  project_process_matches "$pid" dhclient "$CLIENT_INTERFACE"
+  project_process_matches "$pid" "$DHCLIENT_RUNTIME_BINARY" "$CLIENT_INTERFACE"
 }
 
 address_in_dhcp_pool() {
@@ -410,6 +435,11 @@ client_dhcp_address() {
   done
   [ "$total" -eq 1 ] && [ "$count" -eq 1 ] || return 1
   printf '%s' "$selected"
+}
+
+client_static_address_exists() {
+  ip -n "$CLIENT_NAMESPACE" -o -4 address show dev "$CLIENT_INTERFACE" scope global |
+    awk '{print $4}' | grep -F -x -- "$CLIENT_ADDRESS/${LAN_SUBNET#*/}" >/dev/null
 }
 
 remove_client_dhcp_addresses() {

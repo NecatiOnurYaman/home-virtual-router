@@ -4,14 +4,14 @@ set -euo pipefail
 readonly expected_interface="hvr-client"
 readonly expected_router="10.0.0.1"
 readonly expected_dns="10.0.0.1"
-readonly runtime_dir="/run/home-virtual-router/dhcp"
+readonly runtime_dir="/run/home-virtual-router/dhcp/client"
 readonly state_file="$runtime_dir/client-state.env"
 readonly resolv_file="$runtime_dir/client-resolv.conf"
 
 [ "$(uname -s)" = "Linux" ] || exit 1
 [ -f /etc/home-virtual-router-lab ] || exit 1
 [ "${interface:-}" = "$expected_interface" ] || exit 1
-mkdir -p "$runtime_dir"
+[ -d "$runtime_dir" ] || exit 1
 
 case "${reason:-}" in
   BOUND|RENEW|REBIND|REBOOT)

@@ -11,7 +11,19 @@ require_lab_environment
 require_root
 load_topology_config
 validate_topology_names
-for required_command in ip nft sysctl systemctl; do
+command -v ip >/dev/null 2>&1 || die "ip is required"
+
+if ! namespace_exists "$UPSTREAM_NAMESPACE" &&
+   ! namespace_exists "$ROUTER_NAMESPACE" &&
+   ! namespace_exists "$CLIENT_NAMESPACE"; then
+  stop_project_process_if_present "$DHCLIENT_PID_FILE" "$DHCLIENT_RUNTIME_BINARY" "$CLIENT_INTERFACE"
+  stop_project_process_if_present "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"
+  remove_project_dhcp_files
+  printf 'R6 DHCP cleanup complete; no lab namespaces existed, so namespace cleanup was unnecessary.\n'
+  exit 0
+fi
+
+for required_command in nft sysctl systemctl; do
   command -v "$required_command" >/dev/null 2>&1 || die "$required_command is required"
 done
 require_r2_topology
@@ -27,12 +39,12 @@ verify_host_on_exit() {
 }
 trap verify_host_on_exit EXIT
 
-if dhclient_running && command -v dhclient >/dev/null 2>&1; then
-  ip netns exec "$CLIENT_NAMESPACE" dhclient -4 -r -v \
+if dhclient_running; then
+  ip netns exec "$CLIENT_NAMESPACE" "$DHCLIENT_RUNTIME_BINARY" -4 -r -v \
     -pf "$DHCLIENT_PID_FILE" -lf "$DHCLIENT_LEASE_FILE" \
     -cf "$DHCLIENT_CONFIG" -sf "$DHCLIENT_HOOK" "$CLIENT_INTERFACE" || true
 fi
-stop_project_process_if_present "$DHCLIENT_PID_FILE" dhclient "$CLIENT_INTERFACE"
+stop_project_process_if_present "$DHCLIENT_PID_FILE" "$DHCLIENT_RUNTIME_BINARY" "$CLIENT_INTERFACE"
 remove_client_dhcp_addresses
 ip -n "$CLIENT_NAMESPACE" route del default via "$ROUTER_LAN" dev "$CLIENT_INTERFACE" 2>/dev/null || true
 stop_project_process_if_present "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"

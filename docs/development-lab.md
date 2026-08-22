@@ -61,6 +61,10 @@ Leases are stored at `/run/home-virtual-router/dhcp/dnsmasq.leases` in dnsmasq's
 
 R6 resolves the installed `dnsmasq` system user's numeric UID and primary GID from the system account database. It does not assume that the primary group is also named `dnsmasq`, and it will not create an account or group if the user is absent. Failed or interrupted enable operations stop only processes identified by project PID files and command markers, remove only the explicit project runtime files, and restore the R5 static client address and route. `make dhcp-disable` is also safe after a partial start where neither daemon successfully ran.
 
+Ubuntu confines the packaged `/sbin/dhclient` path with AppArmor. R6 therefore installs ephemeral, root-owned mode `0755` copies of the installed client binary and project hook under the private mode `0700` directory `/run/home-virtual-router/dhcp/client/`. The client lease and PID files are separate mode `0600` files there. This avoids changing Ubuntu's AppArmor policy and avoids repository mount/traversal restrictions; the copy runs only in `hvr-client` and is removed by R6 cleanup. Dnsmasq retains its separate lease and PID files in `/run/home-virtual-router/dhcp/`. The hook writes resolver data only to the client runtime directory and never touches `/etc/resolv.conf`.
+
+Host-interface safety snapshots compare stable interface names, Ethernet addresses, and IPv4 address/prefix pairs. Volatile `valid_lft` and `preferred_lft` countdowns are intentionally excluded, while default-route verification remains a separate exact comparison. With no R2 namespaces, `make dhcp-disable` stops only PID-validated project processes, removes the explicit R6 runtime files, and reports that namespace cleanup was unnecessary.
+
 ## Safety boundary
 
 Project scripts do not launch or control UTM and must never alter macOS networking. Future networking commands belong inside the Ubuntu VM and must use the shared guards in `router/scripts/safety.sh`, explicit `hvr-` namespace and interface names, and targeted cleanup.
