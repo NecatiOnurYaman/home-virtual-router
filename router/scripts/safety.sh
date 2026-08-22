@@ -65,3 +65,12 @@ require_explicit_nft_table() {
     *) die "lab nftables table must use the explicit hvr- prefix: $value" ;;
   esac
 }
+
+require_explicit_nft_chain() {
+  local value="${1:-}"
+  require_explicit_name "nftables chain" "$value" || return 1
+  case "$value" in
+    hvr-*) return 0 ;;
+    *) die "lab nftables chain must use the explicit hvr- prefix: $value" ;;
+  esac
+}

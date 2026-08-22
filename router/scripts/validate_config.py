@@ -13,6 +13,7 @@ REQUIRED = {
     "CLIENT_ADDRESS", "UPSTREAM_NAMESPACE", "ROUTER_NAMESPACE", "CLIENT_NAMESPACE",
     "UPSTREAM_INTERFACE", "ROUTER_WAN_INTERFACE", "ROUTER_LAN_INTERFACE",
     "CLIENT_INTERFACE",
+    "NAT_TABLE", "NAT_CHAIN",
 }
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=([^\s#]+)")
 NAME = re.compile(r"hvr-[a-z0-9_.-]+")
@@ -59,7 +60,8 @@ def validate(values: dict[str, str]) -> None:
         "UPSTREAM_INTERFACE", "ROUTER_WAN_INTERFACE", "ROUTER_LAN_INTERFACE",
         "CLIENT_INTERFACE",
     )
-    for key in namespace_keys + interface_keys:
+    nft_keys = ("NAT_TABLE", "NAT_CHAIN")
+    for key in namespace_keys + interface_keys + nft_keys:
         if not NAME.fullmatch(values[key]):
             raise ValueError(f"{key} must use the hvr-* naming convention")
     if len({values[key] for key in namespace_keys}) != len(namespace_keys):

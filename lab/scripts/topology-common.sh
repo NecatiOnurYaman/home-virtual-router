@@ -21,6 +21,8 @@ UPSTREAM_INTERFACE=""
 ROUTER_WAN_INTERFACE=""
 ROUTER_LAN_INTERFACE=""
 CLIENT_INTERFACE=""
+NAT_TABLE=""
+NAT_CHAIN=""
 
 load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
@@ -39,6 +41,8 @@ load_topology_config() {
       ROUTER_WAN_INTERFACE) ROUTER_WAN_INTERFACE="$value" ;;
       ROUTER_LAN_INTERFACE) ROUTER_LAN_INTERFACE="$value" ;;
       CLIENT_INTERFACE) CLIENT_INTERFACE="$value" ;;
+      NAT_TABLE) NAT_TABLE="$value" ;;
+      NAT_CHAIN) NAT_CHAIN="$value" ;;
     esac
   done < "$HVR_CONFIG"
 }
@@ -98,6 +102,8 @@ validate_topology_names() {
   for interface in "$UPSTREAM_INTERFACE" "$ROUTER_WAN_INTERFACE" "$ROUTER_LAN_INTERFACE" "$CLIENT_INTERFACE"; do
     require_explicit_interface "$interface" || return 1
   done
+  require_explicit_nft_table "$NAT_TABLE" || return 1
+  require_explicit_nft_chain "$NAT_CHAIN" || return 1
 }
 
 is_known_namespace() {
@@ -149,4 +155,46 @@ require_r2_topology() {
   for namespace in "$UPSTREAM_NAMESPACE" "$ROUTER_NAMESPACE" "$CLIENT_NAMESPACE"; do
     namespace_exists "$namespace" || die "required R2 namespace is absent: $namespace"
   done
+}
+
+capture_host_nftables() {
+  nft --stateless list ruleset
+}
+
+verify_host_nftables_unchanged() {
+  local before="$1"
+  local after
+  after="$(capture_host_nftables)" || return 1
+  [ "$before" = "$after" ] || die "the Ubuntu VM host nftables ruleset changed unexpectedly"
+}
+
+router_nft() {
+  ip netns exec "$ROUTER_NAMESPACE" nft "$@"
+}
+
+nat_table_exists() {
+  router_nft list table ip "$NAT_TABLE" >/dev/null 2>&1
+}
+
+create_project_nat_table() {
+  router_nft add table ip "$NAT_TABLE"
+  router_nft add chain ip "$NAT_TABLE" "$NAT_CHAIN" \
+    '{ type nat hook postrouting priority srcnat; }'
+  router_nft add rule ip "$NAT_TABLE" "$NAT_CHAIN" \
+    oifname "$ROUTER_WAN_INTERFACE" ip saddr "$LAN_SUBNET" \
+    counter masquerade comment "hvr-r4-masquerade"
+}
+
+delete_project_nat_table() {
+  router_nft delete table ip "$NAT_TABLE"
+}
+
+nat_rule_exists() {
+  local rules
+  rules="$(router_nft list chain ip "$NAT_TABLE" "$NAT_CHAIN" 2>/dev/null)" || return 1
+  printf '%s\n' "$rules" | grep -F -- "type nat hook postrouting priority srcnat" >/dev/null || return 1
+  printf '%s\n' "$rules" | grep -F -- "oifname \"$ROUTER_WAN_INTERFACE\"" >/dev/null || return 1
+  printf '%s\n' "$rules" | grep -F -- "ip saddr $LAN_SUBNET" >/dev/null || return 1
+  printf '%s\n' "$rules" | grep -F -- "masquerade" >/dev/null || return 1
+  printf '%s\n' "$rules" | grep -F -- "comment \"hvr-r4-masquerade\"" >/dev/null
 }

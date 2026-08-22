@@ -16,6 +16,9 @@ DESTROY = ROOT / "lab/scripts/destroy-topology.sh"
 CREATE = ROOT / "lab/scripts/create-topology.sh"
 ROUTING_ENABLE = ROOT / "lab/scripts/enable-routing.sh"
 ROUTING_DISABLE = ROOT / "lab/scripts/disable-routing.sh"
+NAT_ENABLE = ROOT / "lab/scripts/enable-nat.sh"
+NAT_DISABLE = ROOT / "lab/scripts/disable-nat.sh"
+NAT_TEST = ROOT / "lab/scripts/test-nat.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
@@ -35,6 +38,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(values["ROUTER_LAN_INTERFACE"], "hvr-lan")
         self.assertEqual(values["CLIENT_INTERFACE"], "hvr-client")
         self.assertEqual(values["CLIENT_ADDRESS"], "10.0.0.10")
+        self.assertEqual(values["NAT_TABLE"], "hvr-nat")
+        self.assertEqual(values["NAT_CHAIN"], "hvr-postrouting")
 
     def test_rejects_executable_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -217,6 +222,76 @@ class RoutingStageTests(unittest.TestCase):
                 'verify_host_ipv4_forwarding_unchanged "$host_forwarding_before"',
                 script,
             )
+
+
+class NatStageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enable = NAT_ENABLE.read_text(encoding="utf-8")
+        self.disable = NAT_DISABLE.read_text(encoding="utf-8")
+        self.common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        self.integration_test = NAT_TEST.read_text(encoding="utf-8")
+
+    def test_nat_table_and_chain_are_allowlisted(self) -> None:
+        result = subprocess.run(
+            [
+                "bash", "-c",
+                f"source '{SAFETY}'; "
+                "require_explicit_nft_table hvr-nat; "
+                "require_explicit_nft_chain hvr-postrouting",
+            ],
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('require_explicit_nft_table "$NAT_TABLE"', self.common)
+        self.assertIn('require_explicit_nft_chain "$NAT_CHAIN"', self.common)
+
+    def test_masquerade_rule_is_exact(self) -> None:
+        self.assertIn('oifname "$ROUTER_WAN_INTERFACE" ip saddr "$LAN_SUBNET"', self.common)
+        self.assertIn('counter masquerade comment "hvr-r4-masquerade"', self.common)
+        self.assertIn("type nat hook postrouting priority srcnat", self.common)
+
+    def test_all_nat_mutations_are_router_namespace_scoped(self) -> None:
+        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" nft "$@"', self.common)
+        self.assertIn('router_nft add table ip "$NAT_TABLE"', self.common)
+        self.assertIn('router_nft delete table ip "$NAT_TABLE"', self.common)
+        for script in (self.enable, self.disable):
+            self.assertNotIn("\nnft add", script)
+            self.assertNotIn("\nnft delete", script)
+            self.assertNotIn("nft flush", script)
+
+    def test_enable_removes_and_disable_restores_exact_return_route(self) -> None:
+        exact_delete = (
+            'ip -n "$UPSTREAM_NAMESPACE" route del "$LAN_SUBNET" '
+            'via "$ROUTER_WAN" dev "$UPSTREAM_INTERFACE"'
+        )
+        exact_add = (
+            'ip -n "$UPSTREAM_NAMESPACE" route add "$LAN_SUBNET" '
+            'via "$ROUTER_WAN" dev "$UPSTREAM_INTERFACE"'
+        )
+        self.assertIn(exact_delete, self.enable)
+        self.assertIn(exact_add, self.disable)
+        self.assertNotIn("route flush", self.enable + self.disable)
+
+    def test_no_dnat_port_forwarding_or_filter_policy(self) -> None:
+        scripts = (self.enable + self.disable + self.common).lower()
+        self.assertNotIn(" dnat", scripts)
+        self.assertNotIn(" redirect", scripts)
+        self.assertNotIn(" hook input", scripts)
+        self.assertNotIn(" hook forward", scripts)
+        self.assertNotIn("policy drop", scripts)
+
+    def test_host_state_is_snapshotted_and_verified(self) -> None:
+        for script in (self.enable, self.disable):
+            self.assertIn('default_route_before="$(capture_default_route)"', script)
+            self.assertIn('host_forwarding_before="$(capture_host_ipv4_forwarding)"', script)
+            self.assertIn('host_nftables_before="$(capture_host_nftables)"', script)
+            self.assertIn('verify_host_nftables_unchanged "$host_nftables_before"', script)
+        self.assertNotIn("sysctl -q -w net.ipv4.ip_forward", self.enable + self.disable)
+
+    def test_source_translation_is_observed_not_inferred(self) -> None:
+        self.assertIn('observed_source="$(tail -n 1 "$capture_file")"', self.integration_test)
+        self.assertIn('[ "$observed_source" = "$ROUTER_WAN" ]', self.integration_test)
 
 
 if __name__ == "__main__":

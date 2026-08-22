@@ -37,12 +37,40 @@ if namespace_exists "$ROUTER_NAMESPACE" && namespace_exists "$CLIENT_NAMESPACE" 
   ip -n "$CLIENT_NAMESPACE" route show default | sed 's/^/    /'
   printf '  upstream return route to %s:\n' "$LAN_SUBNET"
   ip -n "$UPSTREAM_NAMESPACE" route show "$LAN_SUBNET" | sed 's/^/    /'
-  if [ "$forwarding" = "1" ] && client_default_route_exists && upstream_return_route_exists; then
-    printf '  R3 routing: enabled\n'
+  if [ "$forwarding" = "1" ] && client_default_route_exists; then
+    printf '  R3 forwarding/client state: enabled\n'
+    if upstream_return_route_exists; then
+      printf '  R3 routed-without-NAT return path: enabled\n'
+    else
+      printf '  R3 routed-without-NAT return path: absent (expected under R4)\n'
+    fi
   else
-    printf '  R3 routing: disabled or incomplete\n'
+    printf '  R3 forwarding/client state: disabled or incomplete\n'
   fi
 else
   printf '  R2 topology: incomplete or absent\n'
   printf '  R3 routing: unavailable\n'
+fi
+
+printf '\n[R4 NAT state]\n'
+if namespace_exists "$ROUTER_NAMESPACE" && command -v nft >/dev/null 2>&1; then
+  if nat_table_exists; then
+    printf '  table ip %s: present\n' "$NAT_TABLE"
+    printf '  masquerade rule and counters:\n'
+    if nat_chain_output="$(router_nft list chain ip "$NAT_TABLE" "$NAT_CHAIN" 2>/dev/null)"; then
+      printf '%s\n' "$nat_chain_output" | sed 's/^/    /'
+    else
+      printf '    expected chain %s is absent\n' "$NAT_CHAIN"
+    fi
+    if nat_rule_exists && ! ip -n "$UPSTREAM_NAMESPACE" route show "$LAN_SUBNET" | grep -q .; then
+      printf '  R4 NAT: enabled\n'
+    else
+      printf '  R4 NAT: incomplete or conflicting\n'
+    fi
+  else
+    printf '  table ip %s: absent\n' "$NAT_TABLE"
+    printf '  R4 NAT: disabled\n'
+  fi
+else
+  printf '  R4 NAT: unavailable (router namespace or nft missing)\n'
 fi

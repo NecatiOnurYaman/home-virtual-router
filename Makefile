@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -41,3 +41,19 @@ routing-test:
 routing-disable:
 	@echo "Removing only exact R3 namespace routing state requires root."
 	sudo lab/scripts/disable-routing.sh
+
+nat-enable:
+	@echo "Enabling R4 masquerading inside hvr-router requires root."
+	sudo lab/scripts/enable-nat.sh
+
+nat-status:
+	@echo "Inspecting R4 namespace NAT state requires root."
+	sudo lab/scripts/topology-status.sh
+
+nat-test:
+	@echo "Testing R4 masquerading inside the isolated namespaces requires root."
+	sudo lab/scripts/test-nat.sh
+
+nat-disable:
+	@echo "Removing only the project R4 NAT table and restoring R3 requires root."
+	sudo lab/scripts/disable-nat.sh
