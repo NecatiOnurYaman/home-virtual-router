@@ -14,6 +14,8 @@ SAFETY = ROOT / "router/scripts/safety.sh"
 TOPOLOGY_COMMON = ROOT / "lab/scripts/topology-common.sh"
 DESTROY = ROOT / "lab/scripts/destroy-topology.sh"
 CREATE = ROOT / "lab/scripts/create-topology.sh"
+ROUTING_ENABLE = ROOT / "lab/scripts/enable-routing.sh"
+ROUTING_DISABLE = ROOT / "lab/scripts/disable-routing.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
@@ -154,6 +156,67 @@ class TopologyAllowlistTests(unittest.TestCase):
             script.count('verify_host_ipv4_forwarding_unchanged "$host_forwarding_before"'),
             2,
         )
+
+
+class RoutingStageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enable = ROUTING_ENABLE.read_text(encoding="utf-8")
+        self.disable = ROUTING_DISABLE.read_text(encoding="utf-8")
+
+    def test_forwarding_writes_are_router_namespace_scoped(self) -> None:
+        self.assertIn(
+            'ip netns exec "$ROUTER_NAMESPACE" sysctl -q -w net.ipv4.ip_forward=1',
+            self.enable,
+        )
+        for script in (self.enable, self.disable):
+            for line in script.splitlines():
+                if "sysctl -q -w net.ipv4.ip_forward=" in line:
+                    self.assertTrue(line.lstrip().startswith('ip netns exec "$ROUTER_NAMESPACE" '))
+
+    def test_routes_are_exact_and_namespace_scoped(self) -> None:
+        self.assertIn(
+            'ip -n "$CLIENT_NAMESPACE" route add default via "$ROUTER_LAN" dev "$CLIENT_INTERFACE"',
+            self.enable,
+        )
+        self.assertIn(
+            'ip -n "$UPSTREAM_NAMESPACE" route add "$LAN_SUBNET" via "$ROUTER_WAN" dev "$UPSTREAM_INTERFACE"',
+            self.enable,
+        )
+        for script in (self.enable, self.disable):
+            for line in script.splitlines():
+                stripped = line.lstrip()
+                if " route add " in stripped or " route del " in stripped:
+                    self.assertTrue(stripped.startswith('ip -n "$'))
+
+    def test_disable_removes_only_exact_r3_state(self) -> None:
+        self.assertIn(
+            'ip -n "$CLIENT_NAMESPACE" route del default via "$ROUTER_LAN" dev "$CLIENT_INTERFACE"',
+            self.disable,
+        )
+        self.assertIn(
+            'ip -n "$UPSTREAM_NAMESPACE" route del "$LAN_SUBNET" via "$ROUTER_WAN" dev "$UPSTREAM_INTERFACE"',
+            self.disable,
+        )
+        self.assertNotIn("route flush", self.disable)
+        self.assertNotIn("ip netns delete", self.disable)
+
+    def test_r3_has_no_nat_or_nftables_commands(self) -> None:
+        for script in (self.enable, self.disable):
+            lowered = script.lower()
+            self.assertNotIn("nft ", lowered)
+            self.assertNotIn("masquerade", lowered)
+            self.assertNotIn("snat", lowered)
+            self.assertNotIn("dnat", lowered)
+
+    def test_r3_verifies_host_route_and_forwarding_unchanged(self) -> None:
+        for script in (self.enable, self.disable):
+            self.assertIn('default_route_before="$(capture_default_route)"', script)
+            self.assertIn('host_forwarding_before="$(capture_host_ipv4_forwarding)"', script)
+            self.assertIn('verify_default_route_unchanged "$default_route_before"', script)
+            self.assertIn(
+                'verify_host_ipv4_forwarding_unchanged "$host_forwarding_before"',
+                script,
+            )
 
 
 if __name__ == "__main__":

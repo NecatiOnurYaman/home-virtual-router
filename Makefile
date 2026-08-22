@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -25,3 +25,19 @@ lab-status:
 lab-test:
 	@echo "Testing namespace connectivity requires root inside the Ubuntu UTM VM."
 	sudo lab/scripts/test-topology.sh
+
+routing-enable:
+	@echo "Enabling R3 routing inside the lab namespaces requires root."
+	sudo lab/scripts/enable-routing.sh
+
+routing-status:
+	@echo "Inspecting R3 namespace routing state requires root."
+	sudo lab/scripts/topology-status.sh
+
+routing-test:
+	@echo "Testing R3 routed connectivity inside the namespaces requires root."
+	sudo lab/scripts/test-routing.sh
+
+routing-disable:
+	@echo "Removing only exact R3 namespace routing state requires root."
+	sudo lab/scripts/disable-routing.sh

@@ -5,7 +5,7 @@ repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 config="$repo_dir/lab/config/defaults.env"
 checker="$repo_dir/router/scripts/check-dependencies.sh"
 
-printf 'Home Virtual Router lab: Stage R1 foundation only\n'
+printf 'Home Virtual Router lab: Stage R3 IPv4 routing\n'
 printf 'Repository: %s\n' "$repo_dir"
 if [ -r /etc/os-release ]; then
   distribution="$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | head -n 1 | sed 's/^"//; s/"$//')"
@@ -15,7 +15,7 @@ else
 fi
 printf 'Kernel: %s %s\n' "$(uname -s)" "$(uname -r)"
 printf 'Lab strategy: Linux namespaces inside the dedicated Ubuntu UTM VM\n'
-printf 'Topology: not created\n'
+printf 'Topology state: see namespace report below\n'
 printf 'Defaults: %s\n' "$config"
 if [ "$(uname -s)" = "Linux" ] && [ -f /etc/home-virtual-router-lab ]; then
   printf 'Isolation marker: present\n'

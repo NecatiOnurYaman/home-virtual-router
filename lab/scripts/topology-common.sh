@@ -113,3 +113,40 @@ is_known_interface() {
     *) return 1 ;;
   esac
 }
+
+client_default_route_exists() {
+  ip -n "$CLIENT_NAMESPACE" -o route show default | awk \
+    -v gateway="$ROUTER_LAN" -v interface="$CLIENT_INTERFACE" '
+      $1 == "default" {
+        via = ""; dev = ""
+        for (i = 1; i <= NF; i++) {
+          if ($i == "via") via = $(i + 1)
+          if ($i == "dev") dev = $(i + 1)
+        }
+        if (via == gateway && dev == interface) found = 1
+      }
+      END { exit !found }
+    '
+}
+
+upstream_return_route_exists() {
+  ip -n "$UPSTREAM_NAMESPACE" -o route show "$LAN_SUBNET" | awk \
+    -v subnet="$LAN_SUBNET" -v gateway="$ROUTER_WAN" -v interface="$UPSTREAM_INTERFACE" '
+      $1 == subnet {
+        via = ""; dev = ""
+        for (i = 1; i <= NF; i++) {
+          if ($i == "via") via = $(i + 1)
+          if ($i == "dev") dev = $(i + 1)
+        }
+        if (via == gateway && dev == interface) found = 1
+      }
+      END { exit !found }
+    '
+}
+
+require_r2_topology() {
+  local namespace
+  for namespace in "$UPSTREAM_NAMESPACE" "$ROUTER_NAMESPACE" "$CLIENT_NAMESPACE"; do
+    namespace_exists "$namespace" || die "required R2 namespace is absent: $namespace"
+  done
+}
