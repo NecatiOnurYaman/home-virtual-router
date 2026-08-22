@@ -29,6 +29,12 @@ readonly DNS_ENABLED_FILE="$DNS_RUNTIME_DIR/enabled"
 readonly UPSTREAM_DNS_CONFIG="$DNS_RUNTIME_DIR/upstream-dnsmasq.conf"
 readonly UPSTREAM_DNS_PID_FILE="$DNS_RUNTIME_DIR/upstream-dnsmasq.pid"
 readonly UPSTREAM_DNS_LOG_FILE="$DNS_RUNTIME_DIR/upstream-dnsmasq.log"
+readonly IPFIX_RUNTIME_DIR="/run/home-virtual-router/ipfix"
+readonly IPFIX_PID_FILE="$IPFIX_RUNTIME_DIR/softflowd.pid"
+readonly IPFIX_LOG_FILE="$IPFIX_RUNTIME_DIR/softflowd.log"
+readonly IPFIX_COLLECTOR_RESULT="$IPFIX_RUNTIME_DIR/collector-result.json"
+readonly IPFIX_COLLECTOR_READY="$IPFIX_RUNTIME_DIR/collector.ready"
+readonly IPFIX_RECEIVER="$HVR_REPO_DIR/router/scripts/ipfix_test_receiver.py"
 
 # These variables are populated only from an allowlist after Python validation.
 UPSTREAM_SUBNET=""
@@ -60,6 +66,11 @@ DNS_TEST_NAME=""
 DNS_TEST_ADDRESS=""
 DNS_TEST_NAME_ALT=""
 DNS_TEST_ADDRESS_ALT=""
+IPFIX_ENABLED=""
+IPFIX_COLLECTOR_HOST=""
+IPFIX_COLLECTOR_PORT=""
+IPFIX_OBSERVATION_DOMAIN_ID=""
+IPFIX_CAPTURE_INTERFACE=""
 
 load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
@@ -92,6 +103,11 @@ load_topology_config() {
       DNS_TEST_ADDRESS) DNS_TEST_ADDRESS="$value" ;;
       DNS_TEST_NAME_ALT) DNS_TEST_NAME_ALT="$value" ;;
       DNS_TEST_ADDRESS_ALT) DNS_TEST_ADDRESS_ALT="$value" ;;
+      IPFIX_ENABLED) IPFIX_ENABLED="$value" ;;
+      IPFIX_COLLECTOR_HOST) IPFIX_COLLECTOR_HOST="$value" ;;
+      IPFIX_COLLECTOR_PORT) IPFIX_COLLECTOR_PORT="$value" ;;
+      IPFIX_OBSERVATION_DOMAIN_ID) IPFIX_OBSERVATION_DOMAIN_ID="$value" ;;
+      IPFIX_CAPTURE_INTERFACE) IPFIX_CAPTURE_INTERFACE="$value" ;;
     esac
   done < "$HVR_CONFIG"
 }
@@ -596,4 +612,18 @@ validate_router_dns_listeners() {
     }
     END { exit !(seen_lan["udp"] && seen_lan["tcp"] && !bad) }
   '
+}
+
+softflowd_running() {
+  local pid collector
+  pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
+  collector="$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT"
+  project_process_matches "$pid" softflowd "$collector" || return 1
+  project_process_matches "$pid" softflowd "$IPFIX_CAPTURE_INTERFACE"
+}
+
+remove_project_ipfix_files() {
+  rm -f -- "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_COLLECTOR_RESULT" \
+    "$IPFIX_COLLECTOR_READY"
+  rmdir "$IPFIX_RUNTIME_DIR" 2>/dev/null || true
 }

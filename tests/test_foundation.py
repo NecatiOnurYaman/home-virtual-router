@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 import stat
+import struct
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,10 @@ DHCP_TEST = ROOT / "lab/scripts/test-dhcp.sh"
 DNS_ENABLE = ROOT / "lab/scripts/enable-dns.sh"
 DNS_DISABLE = ROOT / "lab/scripts/disable-dns.sh"
 DNS_TEST = ROOT / "lab/scripts/test-dns.sh"
+IPFIX_ENABLE = ROOT / "lab/scripts/enable-ipfix.sh"
+IPFIX_DISABLE = ROOT / "lab/scripts/disable-ipfix.sh"
+IPFIX_TEST = ROOT / "lab/scripts/test-ipfix.sh"
+IPFIX_RECEIVER = ROOT / "router/scripts/ipfix_test_receiver.py"
 DNSMASQ_CONFIG = ROOT / "router/config/dnsmasq-dhcp.conf.template"
 ROUTER_DNS_CONFIG = ROOT / "router/config/dnsmasq-router-dns.conf.template"
 UPSTREAM_DNS_CONFIG = ROOT / "router/config/dnsmasq-upstream-test.conf.template"
@@ -63,6 +68,11 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(values["DNS_CACHE_SIZE"], "150")
         self.assertEqual(values["DNS_TEST_NAME"], "example.test")
         self.assertEqual(values["DNS_TEST_ADDRESS"], "192.0.2.123")
+        self.assertEqual(values["IPFIX_ENABLED"], "1")
+        self.assertEqual(values["IPFIX_COLLECTOR_HOST"], "192.0.2.1")
+        self.assertEqual(values["IPFIX_COLLECTOR_PORT"], "4739")
+        self.assertEqual(values["IPFIX_OBSERVATION_DOMAIN_ID"], "0")
+        self.assertEqual(values["IPFIX_CAPTURE_INTERFACE"], "hvr-lan")
 
     def test_rejects_executable_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -93,6 +103,10 @@ class ConfigTests(unittest.TestCase):
         values["DHCP_RANGE_START"] = "10.0.0.1"
         with self.assertRaises(ValueError):
             validate_config.validate(values)
+        values = validate_config.parse(ROOT / "lab/config/defaults.env")
+        values["DHCP_RANGE_END"] = "10.0.1.10"
+        with self.assertRaises(ValueError):
+            validate_config.validate(values)
 
     def test_rejects_external_r7_dns_configuration(self) -> None:
         values = validate_config.parse(ROOT / "lab/config/defaults.env")
@@ -103,10 +117,19 @@ class ConfigTests(unittest.TestCase):
         values["DNS_TEST_ADDRESS"] = "1.1.1.1"
         with self.assertRaises(ValueError):
             validate_config.validate(values)
-        values = validate_config.parse(ROOT / "lab/config/defaults.env")
-        values["DHCP_RANGE_END"] = "10.0.1.10"
-        with self.assertRaises(ValueError):
-            validate_config.validate(values)
+
+    def test_rejects_unsafe_ipfix_configuration(self) -> None:
+        for key, value in (
+            ("IPFIX_COLLECTOR_HOST", "203.0.113.1"),
+            ("IPFIX_COLLECTOR_PORT", "0"),
+            ("IPFIX_OBSERVATION_DOMAIN_ID", "42"),
+            ("IPFIX_CAPTURE_INTERFACE", "hvr-wan"),
+        ):
+            with self.subTest(key=key):
+                values = validate_config.parse(ROOT / "lab/config/defaults.env")
+                values[key] = value
+                with self.assertRaises(ValueError):
+                    validate_config.validate(values)
 
 
 class DependencyCheckerTests(unittest.TestCase):
@@ -751,6 +774,74 @@ class DnsStageTests(unittest.TestCase):
             self.assertNotIn("systemctl stop", script)
             self.assertNotIn("nft add", script)
             self.assertNotIn("nft delete", script)
+
+
+class R8IpfixTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enable = IPFIX_ENABLE.read_text(encoding="utf-8")
+        self.disable = IPFIX_DISABLE.read_text(encoding="utf-8")
+        self.integration_test = IPFIX_TEST.read_text(encoding="utf-8")
+        self.common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+
+    def test_exporter_is_namespace_scoped_ipfix_v10_on_lan(self) -> None:
+        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" softflowd', self.enable)
+        self.assertIn('-i "$IPFIX_CAPTURE_INTERFACE"', self.enable)
+        self.assertIn('-v 10 -P udp', self.enable)
+        self.assertIn('installed softflowd does not advertise IPFIX v10 support', self.enable)
+        self.assertIn('-n "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT"', self.enable)
+        self.assertIn('IPFIX_CAPTURE_INTERFACE=hvr-lan', (ROOT / "lab/config/defaults.env").read_text())
+
+    def test_host_network_and_services_are_not_modified(self) -> None:
+        combined = self.enable + self.disable + self.integration_test
+        for forbidden in ("systemctl start", "systemctl stop", "nft add", "nft delete", "route add", "route del"):
+            self.assertNotIn(forbidden, combined)
+        for script in (self.enable, self.disable, self.integration_test):
+            self.assertIn("snapshot_r6_host_state", script)
+            self.assertIn("verify_r6_host_state", script)
+
+    def test_cleanup_is_project_scoped_and_preserves_r7(self) -> None:
+        self.assertIn('stop_project_process_if_present "$IPFIX_PID_FILE"', self.disable)
+        self.assertIn("remove_project_ipfix_files", self.disable)
+        self.assertIn("dns_r7_enabled", self.disable)
+        self.assertNotIn("pkill", self.enable + self.disable)
+        self.assertNotIn("killall", self.enable + self.disable)
+        self.assertNotIn("rm -rf", self.enable + self.disable)
+
+    def test_dependency_checker_includes_softflowd(self) -> None:
+        checker = CHECKER.read_text(encoding="utf-8")
+        self.assertIn("softflowd", checker)
+
+    def test_receiver_decodes_template_and_pre_nat_record(self) -> None:
+        receiver_spec = importlib.util.spec_from_file_location("ipfix_receiver", IPFIX_RECEIVER)
+        receiver_module = importlib.util.module_from_spec(receiver_spec)
+        assert receiver_spec.loader
+        receiver_spec.loader.exec_module(receiver_module)
+        fields = ((1, 8), (2, 8), (4, 1), (6, 2), (7, 2), (8, 4),
+                  (11, 2), (12, 4), (152, 8), (153, 8))
+        template_record = struct.pack("!HH", 1024, len(fields)) + b"".join(
+            struct.pack("!HH", element, length) for element, length in fields
+        )
+        template_set = struct.pack("!HH", 2, len(template_record) + 4) + template_record
+        values = (1234, 12, 6, 0x12, 53000, 0x0A000064, 53, 0xC0000201, 1000, 2000)
+        record = b"".join(value.to_bytes(length, "big") for value, (_element, length) in zip(values, fields))
+        data_set = struct.pack("!HH", 1024, len(record) + 5) + record + b"\0"
+        length = 16 + len(template_set) + len(data_set)
+        packet = struct.pack("!HHIII", 10, length, 0, 0, 0) + template_set + data_set
+        validator = receiver_module.IPFIXValidator(0)
+        validator.consume(packet)
+        result = validator.result("10.0.0.100")
+        self.assertTrue(result["required_fields_complete"])
+        self.assertTrue(result["client_source_preserved"])
+        self.assertEqual(result["records"], 1)
+
+    def test_receiver_rejects_non_ipfix_version(self) -> None:
+        receiver_spec = importlib.util.spec_from_file_location("ipfix_receiver_bad", IPFIX_RECEIVER)
+        receiver_module = importlib.util.module_from_spec(receiver_spec)
+        assert receiver_spec.loader
+        receiver_spec.loader.exec_module(receiver_module)
+        packet = struct.pack("!HHIII", 9, 16, 0, 0, 0)
+        with self.assertRaises(receiver_module.IPFIXValidationError):
+            receiver_module.IPFIXValidator(0).consume(packet)
 
 
 if __name__ == "__main__":

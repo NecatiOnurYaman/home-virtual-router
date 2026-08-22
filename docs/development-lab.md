@@ -73,6 +73,17 @@ The router cache holds 150 entries. Native dnsmasq query, forwarding, reply, and
 
 `make dns-disable` restarts the same router dnsmasq with the R6 `port=0` DHCP-only configuration and removes the isolated upstream resolver. The existing dnsmasq lease file, dhclient process, dynamic client address, default route, routing, NAT, and firewall remain intact.
 
+R8 uses Ubuntu's `softflowd` package because it is a small, established packet-based flow exporter with native IPFIX v10, UDP export, interface selection, and the standard fields needed here; it avoids introducing a custom exporter or a heavier accounting suite. Enable also checks that the installed binary advertises version 10 support. Softflowd runs only inside `hvr-router` and captures IPv4 on `hvr-lan`. This LAN-side vantage point sees a client's original dynamic `10.0.0.x` source before R4 masquerading rewrites it on `hvr-wan`:
+
+```text
+hvr-client -- original source --> [hvr-lan | softflowd] hvr-router [NAT | hvr-wan] --> hvr-upstream
+                                      IPFIX v10 over UDP ---------------------------> 192.0.2.1:4739
+```
+
+The isolated test collector runs only in `hvr-upstream`. It structurally validates IPFIX version 10 headers, Template Sets, Data Sets, Observation Domain ID `0`, counters, protocol, TCP flags, transport ports, IPv4 source/destination addresses, and millisecond start/end timestamps. It also requires a decoded record containing the DHCP client's pre-NAT source address. Observation Domain ID `0` reflects softflowd's actual exporter implementation; the configuration validator rejects a misleading alternate value. R8 exports no IPv6 flows and is not a production collector or observability integration.
+
+R8 creates no routes, nftables rules, DHCP/DNS settings, host services, or VM-wide forwarding changes. The export datagrams are router-originated OUTPUT traffic, whereas the R5 nftables chain governs forwarded traffic; no forwarding rule is weakened for telemetry. Runtime PID, log, and test-result files are restricted to `/run/home-virtual-router/ipfix/`. Disable stops only the PID-validated project exporter and leaves R7 running; R7 teardown refuses while R8 is active.
+
 ## Safety boundary
 
 Project scripts do not launch or control UTM and must never alter macOS networking. Future networking commands belong inside the Ubuntu VM and must use the shared guards in `router/scripts/safety.sh`, explicit `hvr-` namespace and interface names, and targeted cleanup.
@@ -115,6 +126,9 @@ The repository does not create this marker and cannot create it on macOS. Removi
 - `make dns-enable` restarts the router dnsmasq in combined DHCP/DNS mode and starts the isolated upstream test resolver.
 - `make dns-test` verifies UDP and TCP port 53, deterministic forwarding, native logs, and a logged cache hit.
 - `make dns-disable` returns the same router process to R6 DHCP-only mode without changing the client lease.
+- `make ipfix-enable` starts namespace-scoped softflowd on `hvr-lan`, exporting IPFIX v10 over UDP to `192.0.2.1:4739`.
+- `make ipfix-test` runs the isolated structural collector and proves the exported client source is pre-NAT.
+- `make ipfix-disable` stops only the project exporter and preserves R7 and all earlier stages.
 - `make lab-destroy` explicitly removes only the configured namespaces and exact-name partial veth endpoints.
 
 The create, status, test, and destroy targets visibly use `sudo` because namespace administration requires root. Creation fails if the topology already exists. Teardown tolerates missing pieces and never performs wildcard or host-wide cleanup.
@@ -147,5 +161,12 @@ Expected R7 results:
 - Router DNS listens on UDP/TCP `10.0.0.1:53`; optional loopback and `hvr-lan` link-local sockets are allowed, while WAN and wildcard exposure are rejected.
 - Repeated queries produce dnsmasq native cache log entries under `/run/home-virtual-router/dns/`.
 - DNS disable leaves the verified R6 DHCP state working.
+
+Expected R8 results:
+
+- The collector receives IPFIX v10 templates and matching data records over UDP in `hvr-upstream`.
+- Supported records expose flow counters, protocol, TCP flags, ports, IPv4 endpoints, and millisecond timestamps.
+- At least one decoded flow has the dynamic `hvr-client` address as its source, proving LAN-side pre-NAT visibility.
+- IPFIX disable leaves R7 DHCP/DNS, R5 firewall, R4 NAT, and R3 routing active.
 
 VM lifecycle and configuration remain explicit UTM administration tasks outside this repository. Disable routing before inspecting the R2 baseline, then use `make lab-destroy` and confirm `make lab-info` reports all three namespaces absent.

@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -101,3 +101,15 @@ dns-disable:
 dns-test:
 	@echo "Testing R7 UDP/TCP DNS forwarding, cache behavior, and logs requires root."
 	sudo lab/scripts/test-dns.sh
+
+ipfix-enable:
+	@echo "Starting the R8 IPFIX v10 exporter inside hvr-router requires root."
+	sudo lab/scripts/enable-ipfix.sh
+
+ipfix-test:
+	@echo "Validating R8 IPFIX templates, records, and pre-NAT client identity requires root."
+	sudo lab/scripts/test-ipfix.sh
+
+ipfix-disable:
+	@echo "Stopping only the project R8 exporter while preserving R7 requires root."
+	sudo lab/scripts/disable-ipfix.sh

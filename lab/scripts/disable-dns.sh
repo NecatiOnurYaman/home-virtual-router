@@ -15,6 +15,7 @@ for required_command in ip nft sysctl dnsmasq systemctl; do
   command -v "$required_command" >/dev/null 2>&1 || die "$required_command is required"
 done
 require_r2_topology
+softflowd_running && die "disable R8 IPFIX before disabling R7 DNS"
 dns_r7_enabled || die "R7 DNS is not enabled"
 client_address_before="$(client_dhcp_address)" || die "R6 dynamic client address is invalid"
 client_default_route_exists || die "R6 client default route is absent"

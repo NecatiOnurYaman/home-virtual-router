@@ -149,3 +149,25 @@ if dns_r7_enabled; then
 else
   printf '  R7 DNS: disabled or incomplete\n'
 fi
+
+printf '\n[R8 IPFIX state]\n'
+printf '  capture: IPv4 on %s in %s (pre-NAT LAN vantage point)\n' \
+  "$IPFIX_CAPTURE_INTERFACE" "$ROUTER_NAMESPACE"
+printf '  collector: udp://%s:%s in %s\n' \
+  "$IPFIX_COLLECTOR_HOST" "$IPFIX_COLLECTOR_PORT" "$UPSTREAM_NAMESPACE"
+printf '  protocol: IPFIX v10, Observation Domain ID %s\n' "$IPFIX_OBSERVATION_DOMAIN_ID"
+printf '  runtime directory: %s\n' "$IPFIX_RUNTIME_DIR"
+printf '  exporter log: %s\n' "$IPFIX_LOG_FILE"
+if [ -s "$IPFIX_COLLECTOR_RESULT" ]; then
+  validated_datagrams="$(sed -n 's/^[[:space:]]*"datagrams": \([0-9][0-9]*\),*$/\1/p' "$IPFIX_COLLECTOR_RESULT" | head -n 1)"
+  printf '  last test collector datagrams: %s\n' "${validated_datagrams:-unknown}"
+else
+  printf '  last test collector datagrams: not yet observed\n'
+fi
+if softflowd_running; then
+  printf '  project softflowd process: running\n'
+  printf '  R8 IPFIX: enabled\n'
+else
+  printf '  project softflowd process: stopped\n'
+  printf '  R8 IPFIX: disabled or incomplete\n'
+fi
