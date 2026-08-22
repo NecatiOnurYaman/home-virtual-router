@@ -58,15 +58,24 @@ ip netns exec "$CLIENT_NAMESPACE" dig +tcp +short +time=2 +tries=1 @"$DNS_UPSTRE
 
 tracked_flows=""
 for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  tracked_flows="$(ip netns exec "$ROUTER_NAMESPACE" softflowctl \
-    -c "$IPFIX_CONTROL_SOCKET" dump-flows 2>/dev/null || true)"
+  if ip netns exec "$ROUTER_NAMESPACE" softflowctl \
+    -c "$IPFIX_CONTROL_SOCKET" dump-flows > "$IPFIX_DUMP_FLOWS_FILE" 2>&1; then
+    tracked_flows="$(cat "$IPFIX_DUMP_FLOWS_FILE")"
+  else
+    tracked_flows=""
+  fi
   printf '%s\n' "$tracked_flows" | grep -F -- "$client_address" >/dev/null && break
   sleep 0.05
 done
-printf '%s\n' "$tracked_flows" | grep -F -- "$client_address" >/dev/null || \
+if ! printf '%s\n' "$tracked_flows" | grep -F -- "$client_address" >/dev/null; then
+  sed 's/^/  /' "$IPFIX_DUMP_FLOWS_FILE" >&2
   die "softflowd did not track fresh traffic from the dynamic client"
-ip netns exec "$ROUTER_NAMESPACE" softflowctl \
-  -c "$IPFIX_CONTROL_SOCKET" expire-all >/dev/null
+fi
+if ! ip netns exec "$ROUTER_NAMESPACE" softflowctl \
+  -c "$IPFIX_CONTROL_SOCKET" expire-all > "$IPFIX_EXPIRE_ALL_FILE" 2>&1; then
+  sed 's/^/  /' "$IPFIX_EXPIRE_ALL_FILE" >&2
+  die "project softflowctl expire-all failed"
+fi
 
 if ! wait "$collector_pid"; then
   collector_pid=""

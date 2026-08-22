@@ -788,7 +788,8 @@ class R8IpfixTests(unittest.TestCase):
         self.assertIn('-i "$IPFIX_CAPTURE_INTERFACE"', self.enable)
         self.assertIn('-v 10 -P udp', self.enable)
         self.assertIn('installed softflowd does not advertise IPFIX v10 support', self.enable)
-        self.assertIn('installed softflowctl does not advertise the expire-all command', self.enable)
+        self.assertNotIn("softflowctl_help", self.enable)
+        self.assertNotIn('advertise the expire-all command', self.enable)
         self.assertIn('-n "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT"', self.enable)
         self.assertIn('IPFIX_CAPTURE_INTERFACE=hvr-lan', (ROOT / "lab/config/defaults.env").read_text())
 
@@ -798,7 +799,12 @@ class R8IpfixTests(unittest.TestCase):
             self.common,
         )
         self.assertIn('-c "$IPFIX_CONTROL_SOCKET"', self.enable)
+        self.assertIn('[ -S "$IPFIX_CONTROL_SOCKET" ]', self.enable)
         self.assertIn('-c "$IPFIX_CONTROL_SOCKET" expire-all', self.integration_test)
+        self.assertIn('-c "$IPFIX_CONTROL_SOCKET" statistics', self.enable)
+        self.assertIn('-c "$IPFIX_CONTROL_SOCKET" dump-flows', self.integration_test)
+        self.assertIn('if ! ip netns exec "$ROUTER_NAMESPACE" softflowctl', self.integration_test)
+        self.assertIn('die "project softflowctl expire-all failed"', self.integration_test)
         self.assertNotIn('-c /run/softflowd.ctl', self.enable + self.disable + self.integration_test)
         self.assertNotIn('-c /var/run/softflowd.ctl', self.enable + self.disable + self.integration_test)
 
