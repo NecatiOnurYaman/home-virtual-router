@@ -434,7 +434,7 @@ class DhcpStageTests(unittest.TestCase):
 
     def test_disable_targets_project_pid_and_restores_static_state(self) -> None:
         self.assertIn(
-            'stop_project_process "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"',
+            'stop_project_process_if_present "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"',
             self.disable,
         )
         self.assertNotIn("killall", self.disable)
@@ -459,6 +459,53 @@ class DhcpStageTests(unittest.TestCase):
         for script in (self.enable, self.disable, self.integration_test):
             self.assertIn("snapshot_r6_host_state", script)
             self.assertIn("verify_r6_host_state", script)
+
+    def test_dnsmasq_identity_uses_numeric_primary_gid(self) -> None:
+        command = f'''
+source "{TOPOLOGY_COMMON}"
+getent() {{ printf '%s\\n' 'dnsmasq:x:123:456:dnsmasq:/var/lib/misc:/usr/sbin/nologin'; }}
+resolve_dnsmasq_identity
+printf '%s:%s' "$DNSMASQ_UID" "$DNSMASQ_GID"
+'''
+        result = subprocess.run(["bash", "-c", command], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "123:456")
+        self.assertIn('chown "$DNSMASQ_UID:$DNSMASQ_GID"', self.enable)
+        self.assertNotIn("dnsmasq:dnsmasq", self.enable + self.disable + TOPOLOGY_COMMON.read_text())
+
+    def test_missing_dnsmasq_user_fails_clearly(self) -> None:
+        command = f'''
+source "{SAFETY}"
+source "{TOPOLOGY_COMMON}"
+getent() {{ return 2; }}
+resolve_dnsmasq_identity
+'''
+        result = subprocess.run(["bash", "-c", command], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("dnsmasq system user is missing", result.stderr)
+
+    def test_partial_pid_state_can_be_cleaned_without_a_daemon(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "dnsmasq.pid"
+            pid_file.write_text("99999999\n", encoding="utf-8")
+            command = f'''
+source "{TOPOLOGY_COMMON}"
+stop_project_process_if_present "{pid_file}" dnsmasq "$DNSMASQ_CONFIG"
+test ! -e "{pid_file}"
+'''
+            result = subprocess.run(["bash", "-c", command], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_disable_allows_missing_r6_binaries_and_limits_cleanup(self) -> None:
+        dependency_loop = self.disable.split("done", 1)[0]
+        self.assertNotIn(" dnsmasq", dependency_loop)
+        self.assertNotIn(" dhclient", dependency_loop)
+        self.assertIn("stop_project_process_if_present", self.disable)
+        common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        self.assertIn("remove_project_dhcp_files()", common)
+        self.assertIn('"$DNSMASQ_CONFIG" "$DNSMASQ_PID_FILE"', common)
+        self.assertNotIn('rm -rf', self.disable + common)
+        self.assertIn('address replace "$CLIENT_ADDRESS/$lan_prefix"', self.disable)
 
 
 if __name__ == "__main__":

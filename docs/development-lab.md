@@ -59,6 +59,8 @@ Dnsmasq binds only to `hvr-lan`; `port=0` disables its DNS service until R7. DHC
 
 Leases are stored at `/run/home-virtual-router/dhcp/dnsmasq.leases` in dnsmasq's five-field format: `<expiry_epoch> <mac> <ip> <hostname> <client_id>`. The separate Home Network Observability Platform can consume this file later; R6 does not synchronize repositories. This dynamic workflow resembles a phone, television, or laptop joining the future home LAN.
 
+R6 resolves the installed `dnsmasq` system user's numeric UID and primary GID from the system account database. It does not assume that the primary group is also named `dnsmasq`, and it will not create an account or group if the user is absent. Failed or interrupted enable operations stop only processes identified by project PID files and command markers, remove only the explicit project runtime files, and restore the R5 static client address and route. `make dhcp-disable` is also safe after a partial start where neither daemon successfully ran.
+
 ## Safety boundary
 
 Project scripts do not launch or control UTM and must never alter macOS networking. Future networking commands belong inside the Ubuntu VM and must use the shared guards in `router/scripts/safety.sh`, explicit `hvr-` namespace and interface names, and targeted cleanup.

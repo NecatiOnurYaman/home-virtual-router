@@ -41,6 +41,8 @@ DHCP_RANGE_START=""
 DHCP_RANGE_END=""
 DHCP_LEASE_TIME=""
 DHCP_DNS_SERVER=""
+DNSMASQ_UID=""
+DNSMASQ_GID=""
 
 load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
@@ -332,6 +334,45 @@ stop_project_process() {
   done
   kill -0 "$pid" 2>/dev/null && die "project process $pid did not stop"
   rm -f "$file"
+}
+
+stop_project_process_if_present() {
+  local file="$1" executable="$2" marker="$3" pid
+  [ -e "$file" ] || return 0
+  if ! pid="$(read_project_pid "$file")"; then
+    rm -f "$file"
+    return 0
+  fi
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$file"
+    return 0
+  fi
+  project_process_matches "$pid" "$executable" "$marker" ||
+    die "PID file $file references a live process that is not the expected project process"
+  stop_project_process "$file" "$executable" "$marker"
+}
+
+resolve_dnsmasq_identity() {
+  local passwd_entry account_name
+  passwd_entry="$(getent passwd dnsmasq 2>/dev/null)" ||
+    { die "dnsmasq system user is missing; install/configure dnsmasq explicitly before enabling R6"; return 1; }
+  IFS=: read -r account_name _ DNSMASQ_UID DNSMASQ_GID _ <<< "$passwd_entry"
+  [ "$account_name" = "dnsmasq" ] || {
+    die "system account lookup returned an unexpected dnsmasq entry"
+    return 1
+  }
+  case "$DNSMASQ_UID:$DNSMASQ_GID" in
+    *[!0-9:]*) die "dnsmasq system account has an invalid numeric UID or primary GID"; return 1 ;;
+    :*|*:) die "dnsmasq system account lacks a numeric UID or primary GID"; return 1 ;;
+  esac
+}
+
+remove_project_dhcp_files() {
+  rm -f -- \
+    "$DNSMASQ_CONFIG" "$DNSMASQ_PID_FILE" "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE" \
+    "$DHCLIENT_PID_FILE" "$DHCLIENT_LEASE_FILE" "$DHCP_CLIENT_STATE_FILE" \
+    "$DHCP_CLIENT_RESOLV_FILE"
+  rmdir "$DHCP_RUNTIME_DIR" 2>/dev/null || true
 }
 
 dnsmasq_dhcp_running() {
