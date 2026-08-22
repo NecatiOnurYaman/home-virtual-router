@@ -11,7 +11,7 @@ hvr-upstream              hvr-router                    hvr-client
                                       10.0.0.1/24
 ```
 
-The upstream uses RFC 5737 TEST-NET-1. Only kernel-generated routes for the two directly connected subnets exist. R2 does not enable IP forwarding, add namespace default routes, provide Internet access, or configure NAT, nftables, DHCP, DNS, or IPFIX.
+The upstream uses RFC 5737 TEST-NET-1. Only kernel-generated routes for the two directly connected subnets exist. R2 explicitly forces IPv4 forwarding off inside `hvr-router`, regardless of the Ubuntu VM host's forwarding value, and verifies the host value is unchanged. Enabling router-namespace forwarding belongs to R3. R2 does not add namespace default routes, provide Internet access, or configure NAT, nftables, DHCP, DNS, or IPFIX.
 
 ## Safety boundary
 

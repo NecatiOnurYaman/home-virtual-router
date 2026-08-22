@@ -13,6 +13,7 @@ CHECKER = ROOT / "router/scripts/check-dependencies.sh"
 SAFETY = ROOT / "router/scripts/safety.sh"
 TOPOLOGY_COMMON = ROOT / "lab/scripts/topology-common.sh"
 DESTROY = ROOT / "lab/scripts/destroy-topology.sh"
+CREATE = ROOT / "lab/scripts/create-topology.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
@@ -128,6 +129,31 @@ class TopologyAllowlistTests(unittest.TestCase):
         self.assertNotIn("ip netns list |", script)
         self.assertNotIn("nft flush", script)
         self.assertNotIn("ip route", script)
+
+    def test_r2_forces_only_router_namespace_forwarding_off(self) -> None:
+        script = CREATE.read_text(encoding="utf-8")
+        namespace_write = (
+            'ip netns exec "$ROUTER_NAMESPACE" sysctl -q -w '
+            'net.ipv4.ip_forward=0'
+        )
+        namespace_verify = (
+            'ip netns exec "$ROUTER_NAMESPACE" sysctl -n '
+            'net.ipv4.ip_forward'
+        )
+        self.assertIn(namespace_write, script)
+        self.assertIn(namespace_verify, script)
+        self.assertNotIn("sysctl -q -w net.ipv4.ip_forward=1", script)
+        for line in script.splitlines():
+            if "sysctl -q -w net.ipv4.ip_forward=" in line:
+                self.assertTrue(line.startswith('ip netns exec "$ROUTER_NAMESPACE" '))
+
+    def test_r2_verifies_host_forwarding_is_unchanged(self) -> None:
+        script = CREATE.read_text(encoding="utf-8")
+        self.assertIn('host_forwarding_before="$(capture_host_ipv4_forwarding)"', script)
+        self.assertGreaterEqual(
+            script.count('verify_host_ipv4_forwarding_unchanged "$host_forwarding_before"'),
+            2,
+        )
 
 
 if __name__ == "__main__":

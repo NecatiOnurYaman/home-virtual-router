@@ -79,6 +79,17 @@ verify_default_route_unchanged() {
   [ "$before" = "$after" ] || die "the Ubuntu VM default route changed unexpectedly"
 }
 
+capture_host_ipv4_forwarding() {
+  sysctl -n net.ipv4.ip_forward
+}
+
+verify_host_ipv4_forwarding_unchanged() {
+  local before="$1"
+  local after
+  after="$(capture_host_ipv4_forwarding)" || return 1
+  [ "$before" = "$after" ] || die "the Ubuntu VM host IPv4 forwarding value changed unexpectedly"
+}
+
 validate_topology_names() {
   local namespace interface
   for namespace in "$UPSTREAM_NAMESPACE" "$ROUTER_NAMESPACE" "$CLIENT_NAMESPACE"; do

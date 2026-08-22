@@ -12,9 +12,11 @@ require_root
 load_topology_config
 validate_topology_names
 command -v ip >/dev/null 2>&1 || die "iproute2 is required"
+command -v sysctl >/dev/null 2>&1 || die "sysctl is required"
 
 default_route_before="$(capture_default_route)"
 require_default_route_is_not_lab_interface "$default_route_before"
+host_forwarding_before="$(capture_host_ipv4_forwarding)"
 
 for namespace in "$UPSTREAM_NAMESPACE" "$ROUTER_NAMESPACE" "$CLIENT_NAMESPACE"; do
   if namespace_exists "$namespace"; then
@@ -42,6 +44,7 @@ rollback() {
     ip link delete "$CLIENT_INTERFACE" 2>/dev/null || true
   fi
   verify_default_route_unchanged "$default_route_before" || status=1
+  verify_host_ipv4_forwarding_unchanged "$host_forwarding_before" || status=1
   exit "$status"
 }
 trap rollback EXIT INT TERM
@@ -49,6 +52,7 @@ created=1
 
 ip netns add "$UPSTREAM_NAMESPACE"
 ip netns add "$ROUTER_NAMESPACE"
+ip netns exec "$ROUTER_NAMESPACE" sysctl -q -w net.ipv4.ip_forward=0
 ip netns add "$CLIENT_NAMESPACE"
 
 ip link add "$UPSTREAM_INTERFACE" type veth peer name "$ROUTER_WAN_INTERFACE"
@@ -78,6 +82,7 @@ if [ "$(ip netns exec "$ROUTER_NAMESPACE" sysctl -n net.ipv4.ip_forward)" != "0"
   die "IPv4 forwarding is unexpectedly enabled in $ROUTER_NAMESPACE"
 fi
 verify_default_route_unchanged "$default_route_before"
+verify_host_ipv4_forwarding_unchanged "$host_forwarding_before"
 created=0
 trap - EXIT INT TERM
 printf 'R2 namespace topology created. IP forwarding, default routes, NAT, and firewall rules remain disabled.\n'
