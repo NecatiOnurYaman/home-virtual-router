@@ -27,6 +27,7 @@ for required_command in nft sysctl systemctl; do
   command -v "$required_command" >/dev/null 2>&1 || die "$required_command is required"
 done
 require_r2_topology
+dns_r7_enabled && die "disable R7 DNS before disabling R6 DHCP"
 nat_rule_exists || die "R4 NAT state is required"
 filter_rules_exist || die "R5 firewall state is required"
 snapshot_r6_host_state

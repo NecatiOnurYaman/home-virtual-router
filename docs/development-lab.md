@@ -55,7 +55,7 @@ hvr-client                    hvr-router / dnsmasq
 Result: 10.0.0.100–10.0.0.199/24, gateway 10.0.0.1, DNS option 10.0.0.1
 ```
 
-Dnsmasq binds only to `hvr-lan`; `port=0` disables its DNS service until R7. DHCP traffic is to and from the router itself on UDP 67/68, so it does not traverse the R5 forward chain. The custom dhclient hook writes the advertised DNS value to `/run/home-virtual-router/dhcp/client-resolv.conf` instead of changing the Ubuntu VM's `/etc/resolv.conf`.
+In R6 mode dnsmasq binds only to `hvr-lan`; `port=0` disables its DNS service until R7 is enabled. DHCP traffic is to and from the router itself on UDP 67/68, so it does not traverse the R5 forward chain. The custom dhclient hook writes the advertised DNS value to `/run/home-virtual-router/dhcp/client/client-resolv.conf` instead of changing the Ubuntu VM's `/etc/resolv.conf`.
 
 Leases are stored at `/run/home-virtual-router/dhcp/dnsmasq.leases` in dnsmasq's five-field format: `<expiry_epoch> <mac> <ip> <hostname> <client_id>`. The separate Home Network Observability Platform can consume this file later; R6 does not synchronize repositories. This dynamic workflow resembles a phone, television, or laptop joining the future home LAN.
 
@@ -64,6 +64,12 @@ R6 resolves the installed `dnsmasq` system user's numeric UID and primary GID fr
 Ubuntu confines the packaged `/sbin/dhclient` path with AppArmor. R6 therefore installs ephemeral, root-owned mode `0755` copies of the installed client binary and project hook under the private mode `0700` directory `/run/home-virtual-router/dhcp/client/`. The client lease and PID files are separate mode `0600` files there. This avoids changing Ubuntu's AppArmor policy and avoids repository mount/traversal restrictions; the copy runs only in `hvr-client` and is removed by R6 cleanup. Dnsmasq retains its separate lease and PID files in `/run/home-virtual-router/dhcp/`. The hook writes resolver data only to the client runtime directory and never touches `/etc/resolv.conf`.
 
 Host-interface safety snapshots compare stable interface names, Ethernet addresses, and IPv4 address/prefix pairs. Volatile `valid_lft` and `preferred_lft` countdowns are intentionally excluded, while default-route verification remains a separate exact comparison. With no R2 namespaces, `make dhcp-disable` stops only PID-validated project processes, removes the explicit R6 runtime files, and reports that namespace cleanup was unnecessary.
+
+R7 makes the DHCP-advertised DNS server functional. The existing router dnsmasq is restarted in combined DHCP/DNS mode, still bound explicitly to `hvr-lan` and `10.0.0.1`; it does not listen on `hvr-wan`. It uses `no-resolv` and forwards only to `192.0.2.1`, where a separate test-only dnsmasq inside `hvr-upstream` returns `example.test → 192.0.2.123` and `router-test.example → 192.0.2.124`. No Ubuntu host or public resolver participates.
+
+The router cache holds 150 entries. Native dnsmasq query, forwarding, reply, and cache messages are written to `/run/home-virtual-router/dns/dnsmasq.log`, which is the path intended for later consumption by the separate observability platform. R7 does not copy or synchronize that log. The R5 firewall has only a forward hook: client DNS addressed to the router uses router-local INPUT/OUTPUT, while forwarded upstream queries originate in `hvr-router`; R7 adds no firewall rules.
+
+`make dns-disable` restarts the same router dnsmasq with the R6 `port=0` DHCP-only configuration and removes the isolated upstream resolver. The existing dnsmasq lease file, dhclient process, dynamic client address, default route, routing, NAT, and firewall remain intact.
 
 ## Safety boundary
 
@@ -104,6 +110,9 @@ The repository does not create this marker and cannot create it on macOS. Removi
 - `make dhcp-status` reports process state, pool, client address/route, and lease entries.
 - `make dhcp-test` validates the dynamic address, route, resolver option, lease, hostname, and connectivity.
 - `make dhcp-disable` stops only project processes and restores the exact R5 static client state.
+- `make dns-enable` restarts the router dnsmasq in combined DHCP/DNS mode and starts the isolated upstream test resolver.
+- `make dns-test` verifies UDP and TCP port 53, deterministic forwarding, native logs, and a logged cache hit.
+- `make dns-disable` returns the same router process to R6 DHCP-only mode without changing the client lease.
 - `make lab-destroy` explicitly removes only the configured namespaces and exact-name partial veth endpoints.
 
 The create, status, test, and destroy targets visibly use `sudo` because namespace administration requires root. Creation fails if the topology already exists. Teardown tolerates missing pieces and never performs wildcard or host-wide cleanup.
@@ -129,5 +138,12 @@ Expected R6 results:
 - The lease file matches the client MAC/address and contains hostname `hvr-client`.
 - Router, WAN, and upstream pings continue through R3–R5.
 - DHCP disable restores `10.0.0.10/24` and its static default route for staged teardown.
+
+Expected R7 results:
+
+- `example.test` resolves through `10.0.0.1` to `192.0.2.123`; the alternate test name resolves over TCP.
+- Router DNS listens on UDP/TCP `10.0.0.1:53`, never on `hvr-wan`, and forwards only to the isolated upstream namespace.
+- Repeated queries produce dnsmasq native cache log entries under `/run/home-virtual-router/dns/`.
+- DNS disable leaves the verified R6 DHCP state working.
 
 VM lifecycle and configuration remain explicit UTM administration tasks outside this repository. Disable routing before inspecting the R2 baseline, then use `make lab-destroy` and confirm `make lab-info` reports all three namespaces absent.

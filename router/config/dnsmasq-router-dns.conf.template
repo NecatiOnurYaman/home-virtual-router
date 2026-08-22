@@ -1,0 +1,19 @@
+# R7 combined DHCP/DNS template. Rendered from validated lab defaults.
+port=53
+interface=@ROUTER_LAN_INTERFACE@
+listen-address=@ROUTER_LAN@
+bind-interfaces
+no-resolv
+no-hosts
+server=@DNS_UPSTREAM@
+cache-size=@DNS_CACHE_SIZE@
+log-queries=extra
+log-facility=@DNS_LOG_FILE@
+dhcp-authoritative
+dhcp-range=@DHCP_RANGE_START@,@DHCP_RANGE_END@,255.255.255.0,@DHCP_LEASE_TIME@
+dhcp-option=option:router,@ROUTER_LAN@
+dhcp-option=option:netmask,255.255.255.0
+dhcp-option=option:dns-server,@DHCP_DNS_SERVER@
+dhcp-leasefile=@DNSMASQ_LEASE_FILE@
+pid-file=@DNSMASQ_PID_FILE@
+log-dhcp

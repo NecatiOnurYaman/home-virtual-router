@@ -4,7 +4,7 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository is at **Stage R6: DHCPv4 in an isolated Linux network-namespace lab**. A dedicated dnsmasq instance inside the router namespace leases the client an address and default route while routing, NAT, and stateful forwarding remain active. Runtime files use separate, minimally permissioned server and client ownership. DNS service, Internet access, management services, and IPFIX are not enabled.
+The repository is at **Stage R7: isolated DNS forwarding, caching, and native query logging**. The existing router dnsmasq process provides DHCP and DNS only on `hvr-lan`; it forwards to a deterministic test resolver in `hvr-upstream`. Internet DNS, blocking, management services, and IPFIX are not enabled.
 
 Development happens inside a dedicated Ubuntu 26.04 LTS virtual machine running under UTM on macOS. The namespace lab stays inside that VM without changing macOS networking or the VM's normal UTM-facing interface and default route.
 
@@ -24,7 +24,10 @@ make routing-enable
 make nat-enable
 make firewall-enable
 make dhcp-enable
+make dns-enable
 make lab-status
+make dns-test
+make dns-disable
 make dhcp-test
 make dhcp-disable
 make firewall-disable

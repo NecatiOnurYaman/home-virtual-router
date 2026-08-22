@@ -21,6 +21,14 @@ readonly DHCLIENT_PID_FILE="$DHCLIENT_RUNTIME_DIR/dhclient.pid"
 readonly DHCLIENT_LEASE_FILE="$DHCLIENT_RUNTIME_DIR/dhclient.leases"
 readonly DHCP_CLIENT_STATE_FILE="$DHCLIENT_RUNTIME_DIR/client-state.env"
 readonly DHCP_CLIENT_RESOLV_FILE="$DHCLIENT_RUNTIME_DIR/client-resolv.conf"
+readonly DNS_RUNTIME_DIR="/run/home-virtual-router/dns"
+readonly ROUTER_DNS_CONFIG_TEMPLATE="$HVR_REPO_DIR/router/config/dnsmasq-router-dns.conf.template"
+readonly UPSTREAM_DNS_CONFIG_TEMPLATE="$HVR_REPO_DIR/router/config/dnsmasq-upstream-test.conf.template"
+readonly DNS_LOG_FILE="$DNS_RUNTIME_DIR/dnsmasq.log"
+readonly DNS_ENABLED_FILE="$DNS_RUNTIME_DIR/enabled"
+readonly UPSTREAM_DNS_CONFIG="$DNS_RUNTIME_DIR/upstream-dnsmasq.conf"
+readonly UPSTREAM_DNS_PID_FILE="$DNS_RUNTIME_DIR/upstream-dnsmasq.pid"
+readonly UPSTREAM_DNS_LOG_FILE="$DNS_RUNTIME_DIR/upstream-dnsmasq.log"
 
 # These variables are populated only from an allowlist after Python validation.
 UPSTREAM_SUBNET=""
@@ -46,6 +54,12 @@ DHCP_LEASE_TIME=""
 DHCP_DNS_SERVER=""
 DNSMASQ_UID=""
 DNSMASQ_GID=""
+DNS_UPSTREAM=""
+DNS_CACHE_SIZE=""
+DNS_TEST_NAME=""
+DNS_TEST_ADDRESS=""
+DNS_TEST_NAME_ALT=""
+DNS_TEST_ADDRESS_ALT=""
 
 load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
@@ -72,6 +86,12 @@ load_topology_config() {
       DHCP_RANGE_END) DHCP_RANGE_END="$value" ;;
       DHCP_LEASE_TIME) DHCP_LEASE_TIME="$value" ;;
       DHCP_DNS_SERVER) DHCP_DNS_SERVER="$value" ;;
+      DNS_UPSTREAM) DNS_UPSTREAM="$value" ;;
+      DNS_CACHE_SIZE) DNS_CACHE_SIZE="$value" ;;
+      DNS_TEST_NAME) DNS_TEST_NAME="$value" ;;
+      DNS_TEST_ADDRESS) DNS_TEST_ADDRESS="$value" ;;
+      DNS_TEST_NAME_ALT) DNS_TEST_NAME_ALT="$value" ;;
+      DNS_TEST_ADDRESS_ALT) DNS_TEST_ADDRESS_ALT="$value" ;;
     esac
   done < "$HVR_CONFIG"
 }
@@ -487,4 +507,54 @@ render_dnsmasq_config() {
     printf 'log-facility=%s\n' "$DNSMASQ_LOG_FILE"
     printf 'log-dhcp\n'
   } > "$DNSMASQ_CONFIG"
+}
+
+render_router_dns_config() {
+  {
+    printf '# Generated R7 combined DHCP/DNS configuration\n'
+    printf 'port=53\n'
+    printf 'interface=%s\n' "$ROUTER_LAN_INTERFACE"
+    printf 'listen-address=%s\n' "$ROUTER_LAN"
+    printf 'bind-interfaces\nno-resolv\nno-hosts\n'
+    printf 'server=%s\n' "$DNS_UPSTREAM"
+    printf 'cache-size=%s\n' "$DNS_CACHE_SIZE"
+    printf 'log-queries=extra\nlog-facility=%s\n' "$DNS_LOG_FILE"
+    printf 'dhcp-authoritative\n'
+    printf 'dhcp-range=%s,%s,255.255.255.0,%s\n' "$DHCP_RANGE_START" "$DHCP_RANGE_END" "$DHCP_LEASE_TIME"
+    printf 'dhcp-option=option:router,%s\n' "$ROUTER_LAN"
+    printf 'dhcp-option=option:netmask,255.255.255.0\n'
+    printf 'dhcp-option=option:dns-server,%s\n' "$DHCP_DNS_SERVER"
+    printf 'dhcp-leasefile=%s\npid-file=%s\nlog-dhcp\n' "$DNSMASQ_LEASE_FILE" "$DNSMASQ_PID_FILE"
+  } > "$DNSMASQ_CONFIG"
+}
+
+render_upstream_dns_config() {
+  {
+    printf '# Generated R7 isolated upstream resolver configuration\n'
+    printf 'port=53\ninterface=%s\nlisten-address=%s\nbind-interfaces\n' "$UPSTREAM_INTERFACE" "$DNS_UPSTREAM"
+    printf 'no-resolv\nno-hosts\ncache-size=0\nlocal-ttl=300\n'
+    printf 'address=/%s/%s\n' "$DNS_TEST_NAME" "$DNS_TEST_ADDRESS"
+    printf 'address=/%s/%s\n' "$DNS_TEST_NAME_ALT" "$DNS_TEST_ADDRESS_ALT"
+    printf 'pid-file=%s\nlog-facility=%s\nlog-queries=extra\n' "$UPSTREAM_DNS_PID_FILE" "$UPSTREAM_DNS_LOG_FILE"
+  } > "$UPSTREAM_DNS_CONFIG"
+}
+
+upstream_dns_running() {
+  local pid
+  pid="$(read_project_pid "$UPSTREAM_DNS_PID_FILE")" || return 1
+  project_process_matches "$pid" dnsmasq "$UPSTREAM_DNS_CONFIG"
+}
+
+dns_r7_enabled() {
+  [ -f "$DNS_ENABLED_FILE" ] || return 1
+  dnsmasq_dhcp_running || return 1
+  upstream_dns_running || return 1
+  grep -F -x -- "port=53" "$DNSMASQ_CONFIG" >/dev/null 2>&1 || return 1
+  grep -F -x -- "server=$DNS_UPSTREAM" "$DNSMASQ_CONFIG" >/dev/null 2>&1
+}
+
+remove_project_dns_files() {
+  rm -f -- "$DNS_LOG_FILE" "$DNS_ENABLED_FILE" "$UPSTREAM_DNS_CONFIG" \
+    "$UPSTREAM_DNS_PID_FILE" "$UPSTREAM_DNS_LOG_FILE"
+  rmdir "$DNS_RUNTIME_DIR" 2>/dev/null || true
 }

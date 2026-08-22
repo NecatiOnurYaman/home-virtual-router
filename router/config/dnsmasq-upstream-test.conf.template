@@ -1,0 +1,14 @@
+# R7 isolated test-only upstream resolver template.
+port=53
+interface=@UPSTREAM_INTERFACE@
+listen-address=@DNS_UPSTREAM@
+bind-interfaces
+no-resolv
+no-hosts
+cache-size=0
+local-ttl=300
+address=/@DNS_TEST_NAME@/@DNS_TEST_ADDRESS@
+address=/@DNS_TEST_NAME_ALT@/@DNS_TEST_ADDRESS_ALT@
+pid-file=@UPSTREAM_DNS_PID_FILE@
+log-facility=@UPSTREAM_DNS_LOG_FILE@
+log-queries=extra

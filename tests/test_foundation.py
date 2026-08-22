@@ -26,7 +26,12 @@ FIREWALL_TEST = ROOT / "lab/scripts/test-firewall.sh"
 DHCP_ENABLE = ROOT / "lab/scripts/enable-dhcp.sh"
 DHCP_DISABLE = ROOT / "lab/scripts/disable-dhcp.sh"
 DHCP_TEST = ROOT / "lab/scripts/test-dhcp.sh"
+DNS_ENABLE = ROOT / "lab/scripts/enable-dns.sh"
+DNS_DISABLE = ROOT / "lab/scripts/disable-dns.sh"
+DNS_TEST = ROOT / "lab/scripts/test-dns.sh"
 DNSMASQ_CONFIG = ROOT / "router/config/dnsmasq-dhcp.conf.template"
+ROUTER_DNS_CONFIG = ROOT / "router/config/dnsmasq-router-dns.conf.template"
+UPSTREAM_DNS_CONFIG = ROOT / "router/config/dnsmasq-upstream-test.conf.template"
 DHCLIENT_HOOK = ROOT / "router/scripts/dhclient-lab-hook.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config", VALIDATOR)
@@ -54,6 +59,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(values["DHCP_RANGE_START"], "10.0.0.100")
         self.assertEqual(values["DHCP_RANGE_END"], "10.0.0.199")
         self.assertEqual(values["DHCP_DNS_SERVER"], "10.0.0.1")
+        self.assertEqual(values["DNS_UPSTREAM"], "192.0.2.1")
+        self.assertEqual(values["DNS_CACHE_SIZE"], "150")
+        self.assertEqual(values["DNS_TEST_NAME"], "example.test")
+        self.assertEqual(values["DNS_TEST_ADDRESS"], "192.0.2.123")
 
     def test_rejects_executable_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -82,6 +91,16 @@ class ConfigTests(unittest.TestCase):
     def test_rejects_invalid_dhcp_pool(self) -> None:
         values = validate_config.parse(ROOT / "lab/config/defaults.env")
         values["DHCP_RANGE_START"] = "10.0.0.1"
+        with self.assertRaises(ValueError):
+            validate_config.validate(values)
+
+    def test_rejects_external_r7_dns_configuration(self) -> None:
+        values = validate_config.parse(ROOT / "lab/config/defaults.env")
+        values["DNS_UPSTREAM"] = "8.8.8.8"
+        with self.assertRaises(ValueError):
+            validate_config.validate(values)
+        values = validate_config.parse(ROOT / "lab/config/defaults.env")
+        values["DNS_TEST_ADDRESS"] = "1.1.1.1"
         with self.assertRaises(ValueError):
             validate_config.validate(values)
         values = validate_config.parse(ROOT / "lab/config/defaults.env")
@@ -592,6 +611,90 @@ test ! -e "{pid_file}"
         self.assertLess(absent_branch, topology_requirement)
         self.assertIn("namespace cleanup was unnecessary", self.disable)
         self.assertIn("remove_project_dhcp_files", self.disable[absent_branch:topology_requirement])
+
+
+class DnsStageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enable = DNS_ENABLE.read_text(encoding="utf-8")
+        self.disable = DNS_DISABLE.read_text(encoding="utf-8")
+        self.integration_test = DNS_TEST.read_text(encoding="utf-8")
+        self.router_config = ROUTER_DNS_CONFIG.read_text(encoding="utf-8")
+        self.upstream_config = UPSTREAM_DNS_CONFIG.read_text(encoding="utf-8")
+        self.common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+
+    def test_router_dns_binds_only_to_lan(self) -> None:
+        self.assertIn("port=53", self.router_config)
+        self.assertIn("interface=@ROUTER_LAN_INTERFACE@", self.router_config)
+        self.assertIn("listen-address=@ROUTER_LAN@", self.router_config)
+        self.assertIn("bind-interfaces", self.router_config)
+        self.assertNotIn("ROUTER_WAN_INTERFACE", self.router_config)
+        self.assertNotIn("ROUTER_WAN", self.router_config)
+        self.assertIn('endpoint="$ROUTER_LAN:53"', self.integration_test)
+        self.assertIn('seen["udp"] && seen["tcp"] && !bad', self.integration_test)
+
+    def test_upstream_is_explicit_and_isolated(self) -> None:
+        self.assertIn("no-resolv", self.router_config)
+        self.assertIn("server=@DNS_UPSTREAM@", self.router_config)
+        self.assertIn("interface=@UPSTREAM_INTERFACE@", self.upstream_config)
+        self.assertIn("listen-address=@DNS_UPSTREAM@", self.upstream_config)
+        combined = self.enable + self.disable + self.integration_test + self.router_config + self.upstream_config
+        for public_resolver in ("8.8.8.8", "1.1.1.1", "9.9.9.9"):
+            self.assertNotIn(public_resolver, combined)
+        self.assertNotIn("/etc/resolv.conf", combined)
+
+    def test_deterministic_records_and_native_logging(self) -> None:
+        self.assertIn("address=/@DNS_TEST_NAME@/@DNS_TEST_ADDRESS@", self.upstream_config)
+        self.assertIn("address=/@DNS_TEST_NAME_ALT@/@DNS_TEST_ADDRESS_ALT@", self.upstream_config)
+        self.assertIn("local-ttl=300", self.upstream_config)
+        self.assertIn("log-queries=extra", self.router_config)
+        self.assertIn("log-facility=@DNS_LOG_FILE@", self.router_config)
+        self.assertIn('readonly DNS_LOG_FILE="$DNS_RUNTIME_DIR/dnsmasq.log"', self.common)
+        self.assertIn('query[A] $DNS_TEST_NAME from', self.integration_test)
+        self.assertIn('reply $DNS_TEST_NAME is $DNS_TEST_ADDRESS', self.integration_test)
+
+    def test_cache_is_dnsmasq_native_and_log_verified(self) -> None:
+        self.assertIn("cache-size=@DNS_CACHE_SIZE@", self.router_config)
+        self.assertIn('cached $DNS_TEST_NAME is $DNS_TEST_ADDRESS', self.integration_test)
+        self.assertIn('kill -HUP "$router_dns_pid"', self.integration_test)
+        self.assertIn('log_start_lines="$(wc -l < "$DNS_LOG_FILE")"', self.integration_test)
+        self.assertNotIn("time ", self.integration_test)
+
+    def test_udp_tcp_queries_use_router_address(self) -> None:
+        self.assertIn('@"$ROUTER_LAN" "$DNS_TEST_NAME" A', self.integration_test)
+        self.assertIn('+tcp +short', self.integration_test)
+        self.assertIn('"$DNS_TEST_ADDRESS"', self.integration_test)
+        self.assertIn('"$DNS_TEST_ADDRESS_ALT"', self.integration_test)
+
+    def test_r7_reuses_router_dnsmasq_and_preserves_dhcp(self) -> None:
+        self.assertIn('stop_project_process "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"', self.enable)
+        self.assertIn("render_router_dns_config", self.enable)
+        self.assertIn("dhcp-range=", self.router_config)
+        self.assertIn("dhcp-leasefile=@DNSMASQ_LEASE_FILE@", self.router_config)
+        self.assertIn('[ "$(client_dhcp_address)" = "$client_address_before" ]', self.enable)
+
+    def test_disable_returns_to_r6_without_releasing_client(self) -> None:
+        self.assertIn("render_dnsmasq_config", self.disable)
+        self.assertIn('grep -F -x -- "port=0"', self.disable)
+        self.assertIn('[ "$(client_dhcp_address)" = "$client_address_before" ]', self.disable)
+        self.assertNotIn("dhclient -4 -r", self.disable)
+        self.assertNotIn("remove_client_dhcp_addresses", self.disable)
+        self.assertNotIn("address del", self.disable)
+
+    def test_process_and_file_cleanup_is_project_scoped(self) -> None:
+        self.assertIn('stop_project_process_if_present "$UPSTREAM_DNS_PID_FILE"', self.disable)
+        self.assertIn("remove_project_dns_files", self.disable)
+        self.assertNotIn("pkill", self.enable + self.disable)
+        self.assertNotIn("killall", self.enable + self.disable)
+        self.assertNotIn("rm -rf", self.enable + self.disable + self.common)
+
+    def test_host_dns_and_network_state_are_unchanged(self) -> None:
+        for script in (self.enable, self.disable, self.integration_test):
+            self.assertIn("snapshot_r6_host_state", script)
+            self.assertIn("verify_r6_host_state", script)
+            self.assertNotIn("systemctl start", script)
+            self.assertNotIn("systemctl stop", script)
+            self.assertNotIn("nft add", script)
+            self.assertNotIn("nft delete", script)
 
 
 if __name__ == "__main__":

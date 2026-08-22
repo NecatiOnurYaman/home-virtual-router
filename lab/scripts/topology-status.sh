@@ -125,3 +125,26 @@ if dnsmasq_dhcp_running && client_dhcp_address >/dev/null && client_default_rout
 else
   printf '  R6 DHCP: disabled or incomplete\n'
 fi
+
+printf '\n[R7 DNS state]\n'
+printf '  intended listener: %s:53 on %s only\n' "$ROUTER_LAN" "$ROUTER_LAN_INTERFACE"
+printf '  isolated upstream resolver: %s:53 in %s\n' "$DNS_UPSTREAM" "$UPSTREAM_NAMESPACE"
+printf '  cache size: %s entries\n' "$DNS_CACHE_SIZE"
+printf '  query log: %s\n' "$DNS_LOG_FILE"
+if dns_r7_enabled; then
+  printf '  combined router DHCP/DNS process: running\n'
+  printf '  isolated upstream DNS process: running\n'
+  if command -v ss >/dev/null 2>&1; then
+    printf '  router DNS listeners:\n'
+    ip netns exec "$ROUTER_NAMESPACE" ss -lntuH | awk '$5 ~ /:53$/ {print "    " $0}'
+  fi
+  printf '  recent DNS log entries:\n'
+  if [ -s "$DNS_LOG_FILE" ]; then
+    tail -n 5 "$DNS_LOG_FILE" | sed 's/^/    /'
+  else
+    printf '    none\n'
+  fi
+  printf '  R7 DNS: enabled\n'
+else
+  printf '  R7 DNS: disabled or incomplete\n'
+fi

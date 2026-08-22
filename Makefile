@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -89,3 +89,15 @@ dhcp-test:
 dhcp-disable:
 	@echo "Stopping only project DHCP state and restoring the R5 static client requires root."
 	sudo lab/scripts/disable-dhcp.sh
+
+dns-enable:
+	@echo "Enabling isolated R7 DNS forwarding, caching, and query logging requires root."
+	sudo lab/scripts/enable-dns.sh
+
+dns-disable:
+	@echo "Returning dnsmasq to R6 DHCP-only mode while preserving the current lease requires root."
+	sudo lab/scripts/disable-dns.sh
+
+dns-test:
+	@echo "Testing R7 UDP/TCP DNS forwarding, cache behavior, and logs requires root."
+	sudo lab/scripts/test-dns.sh

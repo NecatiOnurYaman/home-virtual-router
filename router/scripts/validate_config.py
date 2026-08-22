@@ -15,6 +15,8 @@ REQUIRED = {
     "CLIENT_INTERFACE",
     "NAT_TABLE", "NAT_CHAIN", "FILTER_TABLE", "FILTER_CHAIN",
     "DHCP_RANGE_START", "DHCP_RANGE_END", "DHCP_LEASE_TIME", "DHCP_DNS_SERVER",
+    "DNS_UPSTREAM", "DNS_CACHE_SIZE", "DNS_TEST_NAME", "DNS_TEST_ADDRESS",
+    "DNS_TEST_NAME_ALT", "DNS_TEST_ADDRESS_ALT",
 }
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=([^\s#]+)")
 NAME = re.compile(r"hvr-[a-z0-9_.-]+")
@@ -67,6 +69,20 @@ def validate(values: dict[str, str]) -> None:
         raise ValueError("DHCP_DNS_SERVER must be within LAN_SUBNET")
     if not re.fullmatch(r"[1-9][0-9]*[mhd]", values["DHCP_LEASE_TIME"]):
         raise ValueError("DHCP_LEASE_TIME must be a positive duration ending in m, h, or d")
+    if ipaddress.ip_address(values["DNS_UPSTREAM"]) not in upstream:
+        raise ValueError("DNS_UPSTREAM must be within UPSTREAM_SUBNET")
+    if values["DNS_UPSTREAM"] != values["UPSTREAM_GATEWAY"]:
+        raise ValueError("R7 DNS_UPSTREAM must be the isolated upstream namespace address")
+    if not re.fullmatch(r"[1-9][0-9]{0,3}", values["DNS_CACHE_SIZE"]):
+        raise ValueError("DNS_CACHE_SIZE must be between 1 and 9999")
+    for key in ("DNS_TEST_NAME", "DNS_TEST_NAME_ALT"):
+        if not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", values[key]):
+            raise ValueError(f"{key} must be a lowercase test domain")
+    if values["DNS_TEST_NAME"] == values["DNS_TEST_NAME_ALT"]:
+        raise ValueError("R7 deterministic DNS names must be unique")
+    for key in ("DNS_TEST_ADDRESS", "DNS_TEST_ADDRESS_ALT"):
+        if ipaddress.ip_address(values[key]) not in upstream:
+            raise ValueError(f"{key} must be within RFC 5737 upstream test subnet")
     if upstream.overlaps(lan):
         raise ValueError("UPSTREAM_SUBNET and LAN_SUBNET must not overlap")
     address_keys = ("UPSTREAM_GATEWAY", "ROUTER_WAN", "ROUTER_LAN", "CLIENT_ADDRESS")
