@@ -30,7 +30,7 @@ while IFS='=' read -r key value; do
   esac
 done < "$config"
 
-printf '\nFuture namespaces (informational only):\n'
+printf '\nR2 namespaces (informational only):\n'
 for namespace in hvr-upstream hvr-router hvr-client; do
   if command -v ip >/dev/null 2>&1 && ip netns list 2>/dev/null | awk '{print $1}' | grep -F -x -- "$namespace" >/dev/null 2>&1; then
     printf '  present %s\n' "$namespace"

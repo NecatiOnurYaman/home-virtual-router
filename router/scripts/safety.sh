@@ -2,7 +2,7 @@
 
 # Shared guards for future Linux lab scripts. Sourcing this file changes no state.
 
-readonly HVR_LAB_MARKER="${HVR_LAB_MARKER:-/etc/home-virtual-router-lab}"
+readonly HVR_LAB_MARKER="/etc/home-virtual-router-lab"
 
 die() {
   printf 'error: %s\n' "$*" >&2

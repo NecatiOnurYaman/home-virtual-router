@@ -9,9 +9,13 @@ import sys
 from pathlib import Path
 
 REQUIRED = {
-    "UPSTREAM_SUBNET", "UPSTREAM_GATEWAY", "ROUTER_WAN", "LAN_SUBNET", "ROUTER_LAN"
+    "UPSTREAM_SUBNET", "UPSTREAM_GATEWAY", "ROUTER_WAN", "LAN_SUBNET", "ROUTER_LAN",
+    "CLIENT_ADDRESS", "UPSTREAM_NAMESPACE", "ROUTER_NAMESPACE", "CLIENT_NAMESPACE",
+    "UPSTREAM_INTERFACE", "ROUTER_WAN_INTERFACE", "ROUTER_LAN_INTERFACE",
+    "CLIENT_INTERFACE",
 }
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=([^\s#]+)")
+NAME = re.compile(r"hvr-[a-z0-9_.-]+")
 
 
 def parse(path: Path) -> dict[str, str]:
@@ -43,8 +47,28 @@ def validate(values: dict[str, str]) -> None:
             raise ValueError(f"{key} must be within UPSTREAM_SUBNET")
     if ipaddress.ip_address(values["ROUTER_LAN"]) not in lan:
         raise ValueError("ROUTER_LAN must be within LAN_SUBNET")
+    if ipaddress.ip_address(values["CLIENT_ADDRESS"]) not in lan:
+        raise ValueError("CLIENT_ADDRESS must be within LAN_SUBNET")
     if upstream.overlaps(lan):
         raise ValueError("UPSTREAM_SUBNET and LAN_SUBNET must not overlap")
+    address_keys = ("UPSTREAM_GATEWAY", "ROUTER_WAN", "ROUTER_LAN", "CLIENT_ADDRESS")
+    if len({values[key] for key in address_keys}) != len(address_keys):
+        raise ValueError("lab interface addresses must be unique")
+    namespace_keys = ("UPSTREAM_NAMESPACE", "ROUTER_NAMESPACE", "CLIENT_NAMESPACE")
+    interface_keys = (
+        "UPSTREAM_INTERFACE", "ROUTER_WAN_INTERFACE", "ROUTER_LAN_INTERFACE",
+        "CLIENT_INTERFACE",
+    )
+    for key in namespace_keys + interface_keys:
+        if not NAME.fullmatch(values[key]):
+            raise ValueError(f"{key} must use the hvr-* naming convention")
+    if len({values[key] for key in namespace_keys}) != len(namespace_keys):
+        raise ValueError("namespace names must be unique")
+    if len({values[key] for key in interface_keys}) != len(interface_keys):
+        raise ValueError("interface names must be unique")
+    for key in interface_keys:
+        if len(values[key]) > 15:
+            raise ValueError(f"{key} exceeds Linux IFNAMSIZ (15 visible characters)")
 
 
 def main() -> int:
