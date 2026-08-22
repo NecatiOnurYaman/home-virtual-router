@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-default_commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig softflowd softflowctl"
+default_commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig pmacctd"
 commands="${HVR_CHECK_COMMANDS:-$default_commands}"
 missing=0
 
@@ -31,12 +31,27 @@ for command_name in $commands; do
       systemctl) package="systemd" ;;
       getent) package="libc-bin" ;;
       dig) package="dnsutils" ;;
-      softflowd|softflowctl) package="softflowd" ;;
+      pmacctd) package="pmacct" ;;
       *) package="package providing $command_name" ;;
     esac
     printf '  missing %s (Ubuntu/Debian package: %s)\n' "$command_name" "$package"
   fi
 done
+
+if printf '%s\n' " $commands " | grep -F ' pmacctd ' >/dev/null 2>&1 && command -v pmacctd >/dev/null 2>&1; then
+  version_output="$(pmacctd -V 2>&1 || true)"
+  if [ -z "$version_output" ]; then
+    printf '  missing pmacctd capability metadata (pmacctd -V returned no output)\n'
+    missing=1
+  else
+    printf '  info    %s\n' "$(printf '%s\n' "$version_output" | head -n 1)"
+    if command -v dpkg-query >/dev/null 2>&1; then
+      package_version="$(dpkg-query -W -f='${Version}' pmacct 2>/dev/null || true)"
+      [ -z "$package_version" ] || printf '  info    Ubuntu/Debian pmacct package %s\n' "$package_version"
+    fi
+    printf '          nfprobe/IPFIX capability is proven by the namespace-scoped startup check\n'
+  fi
+fi
 
 if [ "$missing" -ne 0 ]; then
   printf '\nOne or more dependencies are missing. Install them explicitly inside the lab VM.\n' >&2

@@ -30,21 +30,16 @@ readonly UPSTREAM_DNS_CONFIG="$DNS_RUNTIME_DIR/upstream-dnsmasq.conf"
 readonly UPSTREAM_DNS_PID_FILE="$DNS_RUNTIME_DIR/upstream-dnsmasq.pid"
 readonly UPSTREAM_DNS_LOG_FILE="$DNS_RUNTIME_DIR/upstream-dnsmasq.log"
 readonly IPFIX_RUNTIME_DIR="/run/home-virtual-router/ipfix"
-readonly IPFIX_PID_FILE="$IPFIX_RUNTIME_DIR/softflowd.pid"
-readonly IPFIX_LOG_FILE="$IPFIX_RUNTIME_DIR/softflowd.log"
-readonly IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"
-readonly IPFIX_STATISTICS_FILE="$IPFIX_RUNTIME_DIR/statistics.txt"
-readonly IPFIX_DUMP_FLOWS_FILE="$IPFIX_RUNTIME_DIR/dump-flows.txt"
-readonly IPFIX_EXPIRE_ALL_FILE="$IPFIX_RUNTIME_DIR/expire-all.txt"
+readonly IPFIX_PID_FILE="$IPFIX_RUNTIME_DIR/pmacctd.pid"
+readonly IPFIX_LOG_FILE="$IPFIX_RUNTIME_DIR/pmacctd.log"
+readonly IPFIX_CONFIG_FILE="$IPFIX_RUNTIME_DIR/pmacctd.conf"
+readonly IPFIX_CONFIG_TEMPLATE="$HVR_REPO_DIR/router/config/pmacctd-nfprobe.conf.template"
 readonly IPFIX_COMMAND_FILE="$IPFIX_RUNTIME_DIR/command.txt"
-readonly IPFIX_TEST_PCAP="$IPFIX_RUNTIME_DIR/test-traffic.pcap"
-readonly IPFIX_TCPDUMP_FILE="$IPFIX_RUNTIME_DIR/tcpdump.txt"
-readonly IPFIX_OFFLINE_FILE="$IPFIX_RUNTIME_DIR/offline-softflowd.txt"
-readonly IPFIX_LIVE_DIAGNOSTIC_FILE="$IPFIX_RUNTIME_DIR/live-diagnostic.txt"
-readonly IPFIX_VERSION_FILE="$IPFIX_RUNTIME_DIR/versions.txt"
 readonly IPFIX_COLLECTOR_RESULT="$IPFIX_RUNTIME_DIR/collector-result.json"
 readonly IPFIX_COLLECTOR_READY="$IPFIX_RUNTIME_DIR/collector.ready"
 readonly IPFIX_RECEIVER="$HVR_REPO_DIR/router/scripts/ipfix_test_receiver.py"
+readonly LEGACY_IPFIX_PID_FILE="$IPFIX_RUNTIME_DIR/softflowd.pid"
+readonly LEGACY_IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"
 
 # These variables are populated only from an allowlist after Python validation.
 UPSTREAM_SUBNET=""
@@ -624,26 +619,21 @@ validate_router_dns_listeners() {
   '
 }
 
-softflowd_running() {
-  local pid collector
+pmacctd_running() {
+  local pid
   pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
-  collector="$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT"
-  project_process_matches "$pid" softflowd "$collector" || return 1
-  project_process_matches "$pid" softflowd "$IPFIX_CAPTURE_INTERFACE" || return 1
-  project_process_matches "$pid" softflowd "$IPFIX_CONTROL_SOCKET"
+  project_process_matches "$pid" pmacctd "$IPFIX_CONFIG_FILE"
 }
 
-require_project_ipfix_control_socket() {
-  [ "$IPFIX_CONTROL_SOCKET" = "/run/home-virtual-router/ipfix/softflowd.ctl" ] ||
-    die "IPFIX control socket is not the exact project-owned path"
-  case "$IPFIX_CONTROL_SOCKET" in
-    /run/softflowd.ctl|/var/run/softflowd.ctl)
-      die "refusing the distro softflowd control socket"
-      ;;
-  esac
+render_pmacctd_config() {
+  sed -e "s|@LOG_FILE@|$IPFIX_LOG_FILE|g" \
+    -e "s|@CAPTURE_INTERFACE@|$IPFIX_CAPTURE_INTERFACE|g" \
+    -e "s|@COLLECTOR_HOST@|$IPFIX_COLLECTOR_HOST|g" \
+    -e "s|@COLLECTOR_PORT@|$IPFIX_COLLECTOR_PORT|g" \
+    "$IPFIX_CONFIG_TEMPLATE" > "$IPFIX_CONFIG_FILE"
 }
 
-stop_project_softflowd_if_present() {
+stop_project_pmacctd_if_present() {
   local pid
   [ -e "$IPFIX_PID_FILE" ] || return 0
   pid="$(read_project_pid "$IPFIX_PID_FILE")" || {
@@ -654,25 +644,34 @@ stop_project_softflowd_if_present() {
     rm -f -- "$IPFIX_PID_FILE"
     return 0
   fi
-  if softflowd_running; then
-    stop_project_process "$IPFIX_PID_FILE" softflowd "$IPFIX_CONTROL_SOCKET"
+  if pmacctd_running; then
+    stop_project_process "$IPFIX_PID_FILE" pmacctd "$IPFIX_CONFIG_FILE"
     return 0
   fi
-  # Permit safe cleanup of the immediately preceding R8 invocation, which used
-  # the same project PID, collector, and hvr-lan capture but lacked -c.
-  if project_process_matches "$pid" softflowd "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT" &&
-     project_process_matches "$pid" softflowd "$IPFIX_CAPTURE_INTERFACE"; then
-    stop_project_process "$IPFIX_PID_FILE" softflowd "$IPFIX_CAPTURE_INTERFACE"
-    return 0
-  fi
-  die "refusing to stop a PID that is not an exact current or legacy project softflowd instance"
+  die "refusing to stop a PID that is not the exact project pmacctd instance"
+}
+
+stop_legacy_project_softflowd_if_present() {
+  local pid
+  [ -e "$LEGACY_IPFIX_PID_FILE" ] || return 0
+  pid="$(read_project_pid "$LEGACY_IPFIX_PID_FILE")" || { rm -f -- "$LEGACY_IPFIX_PID_FILE"; return 0; }
+  if ! kill -0 "$pid" 2>/dev/null; then rm -f -- "$LEGACY_IPFIX_PID_FILE"; return 0; fi
+  project_process_matches "$pid" softflowd "$IPFIX_CAPTURE_INTERFACE" ||
+    die "refusing to stop a PID that is not the legacy project softflowd instance"
+  project_process_matches "$pid" softflowd "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT" ||
+    die "legacy softflowd PID does not match the project collector"
+  stop_project_process "$LEGACY_IPFIX_PID_FILE" softflowd "$IPFIX_CAPTURE_INTERFACE"
 }
 
 remove_project_ipfix_files() {
-  rm -f -- "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_CONTROL_SOCKET" \
-    "$IPFIX_STATISTICS_FILE" "$IPFIX_DUMP_FLOWS_FILE" "$IPFIX_EXPIRE_ALL_FILE" \
-    "$IPFIX_COMMAND_FILE" "$IPFIX_TEST_PCAP" "$IPFIX_TCPDUMP_FILE" "$IPFIX_OFFLINE_FILE" \
-    "$IPFIX_LIVE_DIAGNOSTIC_FILE" "$IPFIX_VERSION_FILE" \
+  rm -f -- "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_CONFIG_FILE" \
+    "$IPFIX_COMMAND_FILE" \
+    "$LEGACY_IPFIX_PID_FILE" "$LEGACY_IPFIX_CONTROL_SOCKET" \
+    "$IPFIX_RUNTIME_DIR/softflowd.log" "$IPFIX_RUNTIME_DIR/statistics.txt" \
+    "$IPFIX_RUNTIME_DIR/dump-flows.txt" "$IPFIX_RUNTIME_DIR/expire-all.txt" \
+    "$IPFIX_RUNTIME_DIR/test-traffic.pcap" "$IPFIX_RUNTIME_DIR/tcpdump.txt" \
+    "$IPFIX_RUNTIME_DIR/offline-softflowd.txt" "$IPFIX_RUNTIME_DIR/live-diagnostic.txt" \
+    "$IPFIX_RUNTIME_DIR/versions.txt" \
     "$IPFIX_RUNTIME_DIR/diagnostic-no-promisc.ctl" \
     "$IPFIX_RUNTIME_DIR/diagnostic-no-promisc.pid" \
     "$IPFIX_RUNTIME_DIR/diagnostic-no-promisc.log" \

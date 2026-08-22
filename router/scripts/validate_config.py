@@ -94,7 +94,7 @@ def validate(values: dict[str, str]) -> None:
     if int(values["IPFIX_COLLECTOR_PORT"]) > 65535:
         raise ValueError("IPFIX_COLLECTOR_PORT must be between 1 and 65535")
     if values["IPFIX_OBSERVATION_DOMAIN_ID"] != "0":
-        raise ValueError("softflowd uses fixed IPFIX Observation Domain ID 0")
+        raise ValueError("the R8 pmacct nfprobe engine is configured for Observation Domain ID 0")
     if values["IPFIX_CAPTURE_INTERFACE"] != values["ROUTER_LAN_INTERFACE"]:
         raise ValueError("R8 must capture on the router LAN interface before NAT")
     if upstream.overlaps(lan):

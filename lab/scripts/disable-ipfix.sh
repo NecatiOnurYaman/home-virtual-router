@@ -11,7 +11,6 @@ require_lab_environment
 require_root
 load_topology_config
 validate_topology_names
-require_project_ipfix_control_socket
 for required_command in ip nft sysctl systemctl; do
   command -v "$required_command" >/dev/null 2>&1 || die "$required_command is required"
 done
@@ -27,7 +26,8 @@ verify_host_on_exit() {
 }
 trap verify_host_on_exit EXIT
 
-stop_project_softflowd_if_present
+stop_project_pmacctd_if_present
+stop_legacy_project_softflowd_if_present
 remove_project_ipfix_files
 dns_r7_enabled || die "R8 disable changed R7 DNS state"
 client_dhcp_address >/dev/null || die "R8 disable changed R6 DHCP state"

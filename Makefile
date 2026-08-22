@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test ipfix-live-diagnose
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -113,7 +113,3 @@ ipfix-test:
 ipfix-disable:
 	@echo "Stopping only the project R8 exporter while preserving R7 requires root."
 	sudo lab/scripts/disable-ipfix.sh
-
-ipfix-live-diagnose:
-	@echo "Comparing bounded R8 live capture with and without -N requires root."
-	sudo lab/scripts/diagnose-ipfix-live.sh

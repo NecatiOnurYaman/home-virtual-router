@@ -158,6 +158,7 @@ def main() -> int:
     args = parser.parse_args()
 
     validator = IPFIXValidator(args.observation_domain)
+    started_at = time.monotonic()
     deadline = time.monotonic() + args.timeout
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
         receiver.bind((args.bind, args.port))
@@ -176,10 +177,13 @@ def main() -> int:
                 and result["required_fields_complete"]
                 and result["client_source_preserved"]
             ):
+                result["receive_latency_seconds"] = round(time.monotonic() - started_at, 3)
                 args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
                 return 0
 
-    args.output.write_text(json.dumps(validator.result(args.client), indent=2) + "\n", encoding="utf-8")
+    result = validator.result(args.client)
+    result["receive_latency_seconds"] = round(time.monotonic() - started_at, 3)
+    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return 1
 
 

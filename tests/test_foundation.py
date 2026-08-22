@@ -33,8 +33,8 @@ DNS_TEST = ROOT / "lab/scripts/test-dns.sh"
 IPFIX_ENABLE = ROOT / "lab/scripts/enable-ipfix.sh"
 IPFIX_DISABLE = ROOT / "lab/scripts/disable-ipfix.sh"
 IPFIX_TEST = ROOT / "lab/scripts/test-ipfix.sh"
-IPFIX_LIVE_DIAGNOSE = ROOT / "lab/scripts/diagnose-ipfix-live.sh"
 IPFIX_RECEIVER = ROOT / "router/scripts/ipfix_test_receiver.py"
+PMACCT_CONFIG = ROOT / "router/config/pmacctd-nfprobe.conf.template"
 DNSMASQ_CONFIG = ROOT / "router/config/dnsmasq-dhcp.conf.template"
 ROUTER_DNS_CONFIG = ROOT / "router/config/dnsmasq-router-dns.conf.template"
 UPSTREAM_DNS_CONFIG = ROOT / "router/config/dnsmasq-upstream-test.conf.template"
@@ -783,119 +783,48 @@ class R8IpfixTests(unittest.TestCase):
         self.disable = IPFIX_DISABLE.read_text(encoding="utf-8")
         self.integration_test = IPFIX_TEST.read_text(encoding="utf-8")
         self.common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
-        self.live_diagnostic = IPFIX_LIVE_DIAGNOSE.read_text(encoding="utf-8")
+        self.config = PMACCT_CONFIG.read_text(encoding="utf-8")
 
     def test_exporter_is_namespace_scoped_ipfix_v10_on_lan(self) -> None:
-        self.assertIn('softflowd_command=(softflowd', self.enable)
-        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" "${softflowd_command[@]}"', self.enable)
-        self.assertIn('-i "$IPFIX_CAPTURE_INTERFACE"', self.enable)
-        self.assertIn('-v 10 -P udp', self.enable)
-        self.assertIn('installed softflowd does not advertise IPFIX v10 support', self.enable)
-        self.assertNotIn("softflowctl_help", self.enable)
-        self.assertNotIn('advertise the expire-all command', self.enable)
-        self.assertIn('-n "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT"', self.enable)
+        self.assertIn('pmacctd_command=(pmacctd -f "$IPFIX_CONFIG_FILE")', self.enable)
+        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" "${pmacctd_command[@]}"', self.enable)
         self.assertIn('IPFIX_CAPTURE_INTERFACE=hvr-lan', (ROOT / "lab/config/defaults.env").read_text())
-        command_start = self.enable.index("softflowd_command=(softflowd")
-        command_end = self.enable.index(")\nprintf '%q '", command_start)
-        command = self.enable[command_start:command_end]
-        self.assertIn("\n  -- ip", command)
-        self.assertNotIn("\n  ip", command)
+        self.assertIn("pcap_interface: @CAPTURE_INTERFACE@", self.config)
+        self.assertIn("pcap_filter: ip", self.config)
+        self.assertIn("plugins: nfprobe[hvr]", self.config)
+        self.assertIn("nfprobe_version[hvr]: 10", self.config)
+        self.assertIn("nfprobe_receiver[hvr]: @COLLECTOR_HOST@:@COLLECTOR_PORT@", self.config)
+        self.assertIn("nfprobe_engine[hvr]: 0:0", self.config)
         self.assertIn('> "$IPFIX_COMMAND_FILE"', self.enable)
 
-    def test_control_socket_and_forced_expiry_are_project_scoped(self) -> None:
-        self.assertIn(
-            'readonly IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"',
-            self.common,
-        )
-        self.assertIn('-c "$IPFIX_CONTROL_SOCKET"', self.enable)
-        self.assertIn('[ -S "$IPFIX_CONTROL_SOCKET" ]', self.enable)
-        self.assertIn('-c "$IPFIX_CONTROL_SOCKET" expire-all', self.integration_test)
-        self.assertIn('-c "$IPFIX_CONTROL_SOCKET" statistics', self.enable)
-        self.assertIn('-c "$IPFIX_CONTROL_SOCKET" dump-flows', self.integration_test)
-        self.assertIn('if ! ip netns exec "$ROUTER_NAMESPACE" softflowctl', self.integration_test)
-        self.assertIn('die "project softflowctl expire-all failed"', self.integration_test)
-        self.assertNotIn('-c /run/softflowd.ctl', self.enable + self.disable + self.integration_test)
-        self.assertNotIn('-c /var/run/softflowd.ctl', self.enable + self.disable + self.integration_test)
+    def test_required_nfprobe_fields_and_bounded_timeouts(self) -> None:
+        self.assertIn("src_host, dst_host, src_port, dst_port, proto, tos, tcpflags", self.config)
+        self.assertIn("udp=3:icmp=3:general=3:maxlife=10:expint=1", self.config)
+        self.assertNotIn("timestamps_secs", self.config)
 
-    def test_receiver_precedes_traffic_and_expiry_precedes_wait(self) -> None:
+    def test_receiver_precedes_small_bounded_traffic(self) -> None:
         receiver = self.integration_test.index('python3 "$IPFIX_RECEIVER"')
         ready = self.integration_test.index('IPFIX test receiver did not become ready')
         traffic = self.integration_test.index('ping -c 2', ready)
-        tracked = self.integration_test.index('dump-flows', traffic)
-        expiry = self.integration_test.index('expire-all', tracked)
-        wait = self.integration_test.index('wait "$collector_pid"', expiry)
+        wait = self.integration_test.index('wait "$collector_pid"', traffic)
         self.assertLess(receiver, ready)
         self.assertLess(ready, traffic)
-        self.assertLess(traffic, tracked)
-        self.assertLess(tracked, expiry)
-        self.assertLess(expiry, wait)
+        self.assertLess(traffic, wait)
+        self.assertIn("--timeout 12", self.integration_test)
+        self.assertNotIn("2048", self.integration_test)
+        self.assertNotIn("ping -f", self.integration_test)
 
     def test_failure_cleanup_targets_only_temporary_receiver(self) -> None:
         self.assertIn("trap cleanup_ipfix_test EXIT INT TERM", self.integration_test)
         self.assertIn('project_process_matches "$collector_pid" python3 "$IPFIX_RECEIVER"', self.integration_test)
         self.assertIn('kill "$collector_pid"', self.integration_test)
-        self.assertIn('project_process_matches "$tcpdump_pid" tcpdump "$IPFIX_TEST_PCAP"', self.integration_test)
-        self.assertIn('kill -INT "$tcpdump_pid"', self.integration_test)
         self.assertNotIn("pkill", self.integration_test)
         self.assertNotIn("killall", self.integration_test)
 
-    def test_pcap_and_offline_diagnostics_are_namespace_scoped(self) -> None:
-        self.assertIn('tcpdump -U -nn -i "$IPFIX_CAPTURE_INTERFACE"', self.integration_test)
-        self.assertIn('-w "$IPFIX_TEST_PCAP"', self.integration_test)
-        self.assertIn('softflowd -d -r "$IPFIX_TEST_PCAP" -T full -- ip', self.integration_test)
-        self.assertIn('readonly IPFIX_TEST_PCAP="$IPFIX_RUNTIME_DIR/test-traffic.pcap"', self.common)
-        self.assertIn('readonly IPFIX_TCPDUMP_FILE="$IPFIX_RUNTIME_DIR/tcpdump.txt"', self.common)
-        self.assertIn('readonly IPFIX_OFFLINE_FILE="$IPFIX_RUNTIME_DIR/offline-softflowd.txt"', self.common)
-        offline = self.integration_test.index('softflowd -d -r "$IPFIX_TEST_PCAP"')
-        offline_end = self.integration_test.index('> "$IPFIX_OFFLINE_FILE"', offline)
-        self.assertNotIn("-c ", self.integration_test[offline:offline_end])
-
-    def test_visibility_and_offline_parse_precede_live_flow_check(self) -> None:
-        traffic = self.integration_test.index('ping -c 2')
-        pcap = self.integration_test.index('tcpdump -nn -r', traffic)
-        visibility = self.integration_test.index('hvr-lan pcap does not contain', pcap)
-        offline = self.integration_test.index('softflowd -d -r', visibility)
-        live = self.integration_test.index('live softflowd processed zero packets', offline)
-        tracked = self.integration_test.index('tracked_flows=', live)
-        expiry = self.integration_test.index('expire-all', tracked)
-        self.assertLess(traffic, pcap)
-        self.assertLess(pcap, visibility)
-        self.assertLess(visibility, offline)
-        self.assertLess(offline, live)
-        self.assertLess(live, tracked)
-        self.assertLess(tracked, expiry)
-
-    def test_live_diagnostic_traffic_is_bounded(self) -> None:
-        self.assertIn("readonly DIAGNOSTIC_PACKET_COUNT=2048", self.live_diagnostic)
-        self.assertIn("readonly DIAGNOSTIC_PACKET_SIZE=1200", self.live_diagnostic)
-        self.assertIn('ping -q -c "$DIAGNOSTIC_PACKET_COUNT"', self.live_diagnostic)
-        self.assertNotIn("ping -f", self.live_diagnostic)
-
-    def test_live_diagnostic_compares_explicit_promiscuity_variants(self) -> None:
-        self.assertIn('run_live_variant "-N"', self.live_diagnostic)
-        self.assertIn('"$DIAG_NO_PROMISC_STATS" -N', self.live_diagnostic)
-        self.assertIn('run_live_variant "promiscuous"', self.live_diagnostic)
-        self.assertIn('diagnostic did not restore hvr-lan promiscuity state', self.live_diagnostic)
-
-    def test_live_diagnostic_is_namespace_and_project_scoped(self) -> None:
-        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" "${command[@]}"', self.live_diagnostic)
-        self.assertIn('-i "$IPFIX_CAPTURE_INTERFACE"', self.live_diagnostic)
-        self.assertIn('-c "$control_socket"', self.live_diagnostic)
-        self.assertNotIn("/run/softflowd.ctl", self.live_diagnostic)
-        self.assertNotIn("/var/run/softflowd.ctl", self.live_diagnostic)
-        self.assertNotIn("systemctl start", self.live_diagnostic)
-        self.assertNotIn("systemctl stop", self.live_diagnostic)
-        self.assertNotIn("systemctl enable", self.live_diagnostic)
-        self.assertNotIn("systemctl disable", self.live_diagnostic)
-
-    def test_live_diagnostic_outputs_are_project_owned_and_cleaned(self) -> None:
-        self.assertIn('IPFIX_RUNTIME_DIR/diagnostic-no-promisc', self.live_diagnostic)
-        self.assertIn('IPFIX_RUNTIME_DIR/diagnostic-promisc', self.live_diagnostic)
-        self.assertIn('IPFIX_LIVE_DIAGNOSTIC_FILE', self.live_diagnostic)
-        self.assertIn('IPFIX_VERSION_FILE', self.live_diagnostic)
-        self.assertIn('stop_project_process_if_present "$active_pid_file"', self.live_diagnostic)
-        self.assertIn('diagnostic-no-promisc-statistics.txt', self.common)
-        self.assertIn('diagnostic-promisc-statistics.txt', self.common)
+    def test_actual_binary_capability_is_checked_by_startup(self) -> None:
+        self.assertIn("pmacctd -V", CHECKER.read_text(encoding="utf-8"))
+        self.assertIn("pmacctd could not start nfprobe", self.enable)
+        self.assertIn("installed pmacctd lacks usable nfprobe support", self.enable)
 
     def test_host_network_and_services_are_not_modified(self) -> None:
         combined = self.enable + self.disable + self.integration_test
@@ -910,19 +839,28 @@ class R8IpfixTests(unittest.TestCase):
             self.assertIn("verify_r6_host_state", script)
 
     def test_cleanup_is_project_scoped_and_preserves_r7(self) -> None:
-        self.assertIn("stop_project_softflowd_if_present", self.disable)
-        self.assertIn("if softflowd_running; then", self.common)
-        self.assertIn("refusing to stop a PID that is not an exact current or legacy project softflowd instance", self.common)
+        self.assertIn("stop_project_pmacctd_if_present", self.disable)
+        self.assertIn("if pmacctd_running; then", self.common)
+        self.assertIn("refusing to stop a PID that is not the exact project pmacctd instance", self.common)
         self.assertIn("remove_project_ipfix_files", self.disable)
         self.assertIn("dns_r7_enabled", self.disable)
         self.assertNotIn("pkill", self.enable + self.disable)
         self.assertNotIn("killall", self.enable + self.disable)
         self.assertNotIn("rm -rf", self.enable + self.disable)
 
-    def test_dependency_checker_includes_softflowd(self) -> None:
+    def test_dependency_checker_uses_pmacct_not_softflowd(self) -> None:
         checker = CHECKER.read_text(encoding="utf-8")
-        self.assertIn("softflowd", checker)
-        self.assertIn("softflowctl", checker)
+        self.assertIn("pmacctd", checker)
+        self.assertNotIn("softflowd", checker)
+        self.assertNotIn("softflowctl", checker)
+
+    def test_no_host_service_manipulation_or_normal_softflowd_path(self) -> None:
+        combined = self.enable + self.disable + self.integration_test
+        self.assertNotIn("softflowctl", combined)
+        self.assertNotIn("systemctl start", combined)
+        self.assertNotIn("systemctl stop", combined)
+        self.assertNotIn("systemctl enable", combined)
+        self.assertNotIn("systemctl disable", combined)
 
     def test_receiver_decodes_template_and_pre_nat_record(self) -> None:
         receiver_spec = importlib.util.spec_from_file_location("ipfix_receiver", IPFIX_RECEIVER)

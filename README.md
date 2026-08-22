@@ -4,7 +4,7 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository is at **Stage R8: isolated IPFIX v10 flow export**. A project-owned softflowd process runs only in `hvr-router`, observes IPv4 on the LAN side before NAT, and exports UDP records to a test collector in `hvr-upstream`. The existing R7 DHCP/DNS, routing, NAT, and firewall behavior remains unchanged. Internet DNS, blocking, management services, router metrics, and IPv6 flow export are not enabled.
+The repository is at **Stage R8: isolated IPFIX v10 flow export**. A project-owned `pmacctd` process with its `nfprobe` plugin runs only in `hvr-router`, observes IPv4 on the LAN side before NAT, and exports UDP records to a test collector in `hvr-upstream`. The existing R7 DHCP/DNS, routing, NAT, and firewall behavior remains unchanged. Internet DNS, blocking, management services, router metrics, and IPv6 flow export are not enabled.
 
 Development happens inside a dedicated Ubuntu 26.04 LTS virtual machine running under UTM on macOS. The namespace lab stays inside that VM without changing macOS networking or the VM's normal UTM-facing interface and default route.
 
@@ -16,6 +16,7 @@ Clone or copy the repository into the dedicated Ubuntu VM, then mark that VM exp
 
 ```sh
 sudo touch /etc/home-virtual-router-lab
+sudo apt install pmacct
 make check
 make test
 make lab-info
