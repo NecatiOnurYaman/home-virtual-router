@@ -784,7 +784,8 @@ class R8IpfixTests(unittest.TestCase):
         self.common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
 
     def test_exporter_is_namespace_scoped_ipfix_v10_on_lan(self) -> None:
-        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" softflowd', self.enable)
+        self.assertIn('softflowd_command=(softflowd', self.enable)
+        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" "${softflowd_command[@]}"', self.enable)
         self.assertIn('-i "$IPFIX_CAPTURE_INTERFACE"', self.enable)
         self.assertIn('-v 10 -P udp', self.enable)
         self.assertIn('installed softflowd does not advertise IPFIX v10 support', self.enable)
@@ -792,6 +793,12 @@ class R8IpfixTests(unittest.TestCase):
         self.assertNotIn('advertise the expire-all command', self.enable)
         self.assertIn('-n "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT"', self.enable)
         self.assertIn('IPFIX_CAPTURE_INTERFACE=hvr-lan', (ROOT / "lab/config/defaults.env").read_text())
+        command_start = self.enable.index("softflowd_command=(softflowd")
+        command_end = self.enable.index(")\nprintf '%q '", command_start)
+        command = self.enable[command_start:command_end]
+        self.assertIn("\n  -- ip", command)
+        self.assertNotIn("\n  ip", command)
+        self.assertIn('> "$IPFIX_COMMAND_FILE"', self.enable)
 
     def test_control_socket_and_forced_expiry_are_project_scoped(self) -> None:
         self.assertIn(
@@ -825,8 +832,36 @@ class R8IpfixTests(unittest.TestCase):
         self.assertIn("trap cleanup_ipfix_test EXIT INT TERM", self.integration_test)
         self.assertIn('project_process_matches "$collector_pid" python3 "$IPFIX_RECEIVER"', self.integration_test)
         self.assertIn('kill "$collector_pid"', self.integration_test)
+        self.assertIn('project_process_matches "$tcpdump_pid" tcpdump "$IPFIX_TEST_PCAP"', self.integration_test)
+        self.assertIn('kill -INT "$tcpdump_pid"', self.integration_test)
         self.assertNotIn("pkill", self.integration_test)
         self.assertNotIn("killall", self.integration_test)
+
+    def test_pcap_and_offline_diagnostics_are_namespace_scoped(self) -> None:
+        self.assertIn('tcpdump -U -nn -i "$IPFIX_CAPTURE_INTERFACE"', self.integration_test)
+        self.assertIn('-w "$IPFIX_TEST_PCAP"', self.integration_test)
+        self.assertIn('softflowd -d -r "$IPFIX_TEST_PCAP" -T full -- ip', self.integration_test)
+        self.assertIn('readonly IPFIX_TEST_PCAP="$IPFIX_RUNTIME_DIR/test-traffic.pcap"', self.common)
+        self.assertIn('readonly IPFIX_TCPDUMP_FILE="$IPFIX_RUNTIME_DIR/tcpdump.txt"', self.common)
+        self.assertIn('readonly IPFIX_OFFLINE_FILE="$IPFIX_RUNTIME_DIR/offline-softflowd.txt"', self.common)
+        offline = self.integration_test.index('softflowd -d -r "$IPFIX_TEST_PCAP"')
+        offline_end = self.integration_test.index('> "$IPFIX_OFFLINE_FILE"', offline)
+        self.assertNotIn("-c ", self.integration_test[offline:offline_end])
+
+    def test_visibility_and_offline_parse_precede_live_flow_check(self) -> None:
+        traffic = self.integration_test.index('ping -c 2')
+        pcap = self.integration_test.index('tcpdump -nn -r', traffic)
+        visibility = self.integration_test.index('hvr-lan pcap does not contain', pcap)
+        offline = self.integration_test.index('softflowd -d -r', visibility)
+        live = self.integration_test.index('live softflowd processed zero packets', offline)
+        tracked = self.integration_test.index('tracked_flows=', live)
+        expiry = self.integration_test.index('expire-all', tracked)
+        self.assertLess(traffic, pcap)
+        self.assertLess(pcap, visibility)
+        self.assertLess(visibility, offline)
+        self.assertLess(offline, live)
+        self.assertLess(live, tracked)
+        self.assertLess(tracked, expiry)
 
     def test_host_network_and_services_are_not_modified(self) -> None:
         combined = self.enable + self.disable + self.integration_test

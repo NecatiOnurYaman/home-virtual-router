@@ -47,17 +47,21 @@ chown 0:0 "$IPFIX_RUNTIME_DIR"
 chmod 0750 "$IPFIX_RUNTIME_DIR"
 rm -f "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_CONTROL_SOCKET" \
   "$IPFIX_STATISTICS_FILE" "$IPFIX_DUMP_FLOWS_FILE" "$IPFIX_EXPIRE_ALL_FILE" \
+  "$IPFIX_COMMAND_FILE" "$IPFIX_TEST_PCAP" "$IPFIX_TCPDUMP_FILE" "$IPFIX_OFFLINE_FILE" \
   "$IPFIX_COLLECTOR_RESULT" "$IPFIX_COLLECTOR_READY"
 touch "$IPFIX_LOG_FILE"
 chmod 0640 "$IPFIX_LOG_FILE"
 
-ip netns exec "$ROUTER_NAMESPACE" softflowd -d -N \
+softflowd_command=(softflowd -d -N \
   -c "$IPFIX_CONTROL_SOCKET" \
   -i "$IPFIX_CAPTURE_INTERFACE" \
   -n "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT" \
   -v 10 -P udp -A milli -T full \
   -t general=2 -t tcp=2 -t udp=2 -t maxlife=5 -t expint=1 \
-  ip > "$IPFIX_LOG_FILE" 2>&1 &
+  -- ip)
+printf '%q ' "${softflowd_command[@]}" > "$IPFIX_COMMAND_FILE"
+printf '\n' >> "$IPFIX_COMMAND_FILE"
+ip netns exec "$ROUTER_NAMESPACE" "${softflowd_command[@]}" > "$IPFIX_LOG_FILE" 2>&1 &
 exporter_pid=$!
 printf '%s\n' "$exporter_pid" > "$IPFIX_PID_FILE"
 started=1

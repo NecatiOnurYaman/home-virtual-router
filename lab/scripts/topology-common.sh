@@ -36,6 +36,10 @@ readonly IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"
 readonly IPFIX_STATISTICS_FILE="$IPFIX_RUNTIME_DIR/statistics.txt"
 readonly IPFIX_DUMP_FLOWS_FILE="$IPFIX_RUNTIME_DIR/dump-flows.txt"
 readonly IPFIX_EXPIRE_ALL_FILE="$IPFIX_RUNTIME_DIR/expire-all.txt"
+readonly IPFIX_COMMAND_FILE="$IPFIX_RUNTIME_DIR/command.txt"
+readonly IPFIX_TEST_PCAP="$IPFIX_RUNTIME_DIR/test-traffic.pcap"
+readonly IPFIX_TCPDUMP_FILE="$IPFIX_RUNTIME_DIR/tcpdump.txt"
+readonly IPFIX_OFFLINE_FILE="$IPFIX_RUNTIME_DIR/offline-softflowd.txt"
 readonly IPFIX_COLLECTOR_RESULT="$IPFIX_RUNTIME_DIR/collector-result.json"
 readonly IPFIX_COLLECTOR_READY="$IPFIX_RUNTIME_DIR/collector.ready"
 readonly IPFIX_RECEIVER="$HVR_REPO_DIR/router/scripts/ipfix_test_receiver.py"
@@ -665,6 +669,7 @@ stop_project_softflowd_if_present() {
 remove_project_ipfix_files() {
   rm -f -- "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_CONTROL_SOCKET" \
     "$IPFIX_STATISTICS_FILE" "$IPFIX_DUMP_FLOWS_FILE" "$IPFIX_EXPIRE_ALL_FILE" \
+    "$IPFIX_COMMAND_FILE" "$IPFIX_TEST_PCAP" "$IPFIX_TCPDUMP_FILE" "$IPFIX_OFFLINE_FILE" \
     "$IPFIX_COLLECTOR_RESULT" "$IPFIX_COLLECTOR_READY"
   rmdir "$IPFIX_RUNTIME_DIR" 2>/dev/null || true
 }

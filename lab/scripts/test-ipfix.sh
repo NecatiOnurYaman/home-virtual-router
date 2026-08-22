@@ -11,7 +11,7 @@ require_lab_environment
 require_root
 load_topology_config
 validate_topology_names
-for required_command in ip softflowd softflowctl python3 ping dig nft sysctl systemctl; do
+for required_command in ip softflowd softflowctl tcpdump python3 ping dig nft sysctl systemctl; do
   command -v "$required_command" >/dev/null 2>&1 || die "$required_command is required"
 done
 require_project_ipfix_control_socket
@@ -23,9 +23,18 @@ client_address="$(client_dhcp_address)" || die "R6 dynamic client address is inv
 snapshot_r6_host_state
 
 collector_pid=""
+tcpdump_pid=""
 cleanup_ipfix_test() {
   local status=$?
   trap - EXIT INT TERM
+  if [ -n "$tcpdump_pid" ] && kill -0 "$tcpdump_pid" 2>/dev/null; then
+    if project_process_matches "$tcpdump_pid" tcpdump "$IPFIX_TEST_PCAP"; then
+      kill -INT "$tcpdump_pid" 2>/dev/null || true
+      wait "$tcpdump_pid" 2>/dev/null || true
+    else
+      status=1
+    fi
+  fi
   if [ -n "$collector_pid" ] && kill -0 "$collector_pid" 2>/dev/null; then
     if project_process_matches "$collector_pid" python3 "$IPFIX_RECEIVER"; then
       kill "$collector_pid" 2>/dev/null || true
@@ -52,9 +61,52 @@ for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
 done
 [ -f "$IPFIX_COLLECTOR_READY" ] || die "IPFIX test receiver did not become ready"
 
+rm -f "$IPFIX_TEST_PCAP" "$IPFIX_TCPDUMP_FILE" "$IPFIX_OFFLINE_FILE"
+ip netns exec "$ROUTER_NAMESPACE" tcpdump -U -nn -i "$IPFIX_CAPTURE_INTERFACE" \
+  -w "$IPFIX_TEST_PCAP" "ip and host $client_address" >/dev/null 2>&1 &
+tcpdump_pid=$!
+for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [ -s "$IPFIX_TEST_PCAP" ] && break
+  kill -0 "$tcpdump_pid" 2>/dev/null || die "namespace tcpdump exited before capture became ready"
+  sleep 0.05
+done
+[ -s "$IPFIX_TEST_PCAP" ] || die "namespace tcpdump did not become ready"
+
 ip netns exec "$CLIENT_NAMESPACE" ping -c 2 -W 1 "$UPSTREAM_GATEWAY" >/dev/null
 ip netns exec "$CLIENT_NAMESPACE" dig +short +time=2 +tries=1 @"$DNS_UPSTREAM" "$DNS_TEST_NAME" A >/dev/null
 ip netns exec "$CLIENT_NAMESPACE" dig +tcp +short +time=2 +tries=1 @"$DNS_UPSTREAM" "$DNS_TEST_NAME_ALT" A >/dev/null
+
+kill -INT "$tcpdump_pid"
+wait "$tcpdump_pid"
+tcpdump_pid=""
+ip netns exec "$ROUTER_NAMESPACE" tcpdump -nn -r "$IPFIX_TEST_PCAP" \
+  > "$IPFIX_TCPDUMP_FILE" 2>&1
+grep -F -- "$client_address" "$IPFIX_TCPDUMP_FILE" >/dev/null || \
+  die "hvr-lan pcap does not contain the dynamic client address"
+grep -F -- "$UPSTREAM_GATEWAY" "$IPFIX_TCPDUMP_FILE" >/dev/null || \
+  die "hvr-lan pcap does not contain client-to-upstream traffic"
+grep -E 'link-type EN10MB|link-type Ethernet' "$IPFIX_TCPDUMP_FILE" >/dev/null || \
+  die "hvr-lan pcap does not report an Ethernet datalink type"
+
+if ! ip netns exec "$ROUTER_NAMESPACE" softflowd -d -r "$IPFIX_TEST_PCAP" -T full -- ip \
+  > "$IPFIX_OFFLINE_FILE" 2>&1; then
+  sed 's/^/  /' "$IPFIX_OFFLINE_FILE" >&2
+  die "offline softflowd could not parse the hvr-lan pcap"
+fi
+grep -E 'Packets processed: [1-9][0-9]*' "$IPFIX_OFFLINE_FILE" >/dev/null || {
+  sed 's/^/  /' "$IPFIX_OFFLINE_FILE" >&2
+  die "hvr-lan sees traffic but offline softflowd processed zero packets"
+}
+
+ip netns exec "$ROUTER_NAMESPACE" softflowctl -c "$IPFIX_CONTROL_SOCKET" statistics \
+  > "$IPFIX_STATISTICS_FILE" 2>&1 || {
+  sed 's/^/  /' "$IPFIX_STATISTICS_FILE" >&2
+  die "live project softflowd statistics query failed"
+}
+grep -E 'Packets processed: [1-9][0-9]*' "$IPFIX_STATISTICS_FILE" >/dev/null || {
+  sed 's/^/  /' "$IPFIX_STATISTICS_FILE" >&2
+  die "offline softflowd parses hvr-lan traffic but live softflowd processed zero packets"
+}
 
 tracked_flows=""
 for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
