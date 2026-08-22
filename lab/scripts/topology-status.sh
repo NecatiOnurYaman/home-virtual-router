@@ -127,7 +127,8 @@ else
 fi
 
 printf '\n[R7 DNS state]\n'
-printf '  intended listener: %s:53 on %s only\n' "$ROUTER_LAN" "$ROUTER_LAN_INTERFACE"
+printf '  required LAN listener: %s:53 on %s (UDP/TCP)\n' "$ROUTER_LAN" "$ROUTER_LAN_INTERFACE"
+printf '  permitted additional listeners: router loopback and %s IPv6 link-local\n' "$ROUTER_LAN_INTERFACE"
 printf '  isolated upstream resolver: %s:53 in %s\n' "$DNS_UPSTREAM" "$UPSTREAM_NAMESPACE"
 printf '  cache size: %s entries\n' "$DNS_CACHE_SIZE"
 printf '  query log: %s\n' "$DNS_LOG_FILE"

@@ -26,11 +26,21 @@ verify_host_on_exit() {
 trap verify_host_on_exit EXIT
 
 listeners="$(ip netns exec "$ROUTER_NAMESPACE" ss -lntuH)"
-printf '%s\n' "$listeners" | awk -v endpoint="$ROUTER_LAN:53" '
-  ($1 == "udp" || $1 == "tcp") && $5 == endpoint { seen[$1] = 1 }
-  ($1 == "udp" || $1 == "tcp") && $5 ~ /:53$/ && $5 != endpoint { bad = 1 }
-  END { exit !(seen["udp"] && seen["tcp"] && !bad) }
-' || die "DNS must listen on UDP/TCP $ROUTER_LAN:53 and nowhere else in hvr-router"
+lan_link_local_addresses="$(
+  ip -n "$ROUTER_NAMESPACE" -o -6 address show dev "$ROUTER_LAN_INTERFACE" scope link |
+    awk '{sub(/\/.*/, "", $4); print $4}'
+)"
+printf '%s\n' "$listeners" |
+  validate_router_dns_listeners "$ROUTER_LAN" "$ROUTER_WAN" \
+    "$ROUTER_LAN_INTERFACE" "$lan_link_local_addresses" ||
+  die "DNS listener policy failed: LAN UDP/TCP is required and WAN/wildcard exposure is forbidden"
+
+if ip netns exec "$UPSTREAM_NAMESPACE" dig +short +time=1 +tries=1 @"$ROUTER_WAN" "$DNS_TEST_NAME" A >/dev/null 2>&1; then
+  die "UDP DNS unexpectedly answered through router WAN address $ROUTER_WAN"
+fi
+if ip netns exec "$UPSTREAM_NAMESPACE" dig +tcp +short +time=1 +tries=1 @"$ROUTER_WAN" "$DNS_TEST_NAME" A >/dev/null 2>&1; then
+  die "TCP DNS unexpectedly answered through router WAN address $ROUTER_WAN"
+fi
 
 router_dns_pid="$(read_project_pid "$DNSMASQ_PID_FILE")" || die "router DNS PID file is invalid"
 project_process_matches "$router_dns_pid" dnsmasq "$DNSMASQ_CONFIG" || die "router DNS PID is not the project process"

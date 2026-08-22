@@ -558,3 +558,42 @@ remove_project_dns_files() {
     "$UPSTREAM_DNS_PID_FILE" "$UPSTREAM_DNS_LOG_FILE"
   rmdir "$DNS_RUNTIME_DIR" 2>/dev/null || true
 }
+
+validate_router_dns_listeners() {
+  local lan_address="$1" wan_address="$2" lan_interface="$3" lan_link_local_addresses="$4"
+  awk -v lan="$lan_address" -v wan="$wan_address" -v lan_if="$lan_interface" \
+    -v allowed_v6="$lan_link_local_addresses" '
+    BEGIN {
+      count = split(allowed_v6, addresses, " ")
+      for (i = 1; i <= count; i++) if (addresses[i] != "") lan_v6[addresses[i]] = 1
+    }
+    ($1 == "udp" || $1 == "tcp") && $5 ~ /:53$/ {
+      protocol = $1
+      endpoint = $5
+      sub(/:53$/, "", endpoint)
+      gsub(/\[/, "", endpoint)
+      gsub(/\]/, "", endpoint)
+
+      scope = ""
+      address = endpoint
+      if (index(endpoint, "%")) {
+        split(endpoint, scoped, "%")
+        address = scoped[1]
+        scope = scoped[2]
+      }
+
+      if (address == lan) {
+        seen_lan[protocol] = 1
+      } else if (address == "127.0.0.1" || address == "::1") {
+        # Router-local loopback is allowed.
+      } else if (address in lan_v6 && (scope == "" || scope == lan_if)) {
+        # The exact link-local address assigned to hvr-lan is allowed.
+      } else {
+        bad = 1
+      }
+
+      if (address == wan || address == "0.0.0.0" || address == "::" || address == "*") bad = 1
+    }
+    END { exit !(seen_lan["udp"] && seen_lan["tcp"] && !bad) }
+  '
+}

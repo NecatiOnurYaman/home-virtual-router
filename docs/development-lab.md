@@ -67,6 +67,8 @@ Host-interface safety snapshots compare stable interface names, Ethernet address
 
 R7 makes the DHCP-advertised DNS server functional. The existing router dnsmasq is restarted in combined DHCP/DNS mode, still bound explicitly to `hvr-lan` and `10.0.0.1`; it does not listen on `hvr-wan`. It uses `no-resolv` and forwards only to `192.0.2.1`, where a separate test-only dnsmasq inside `hvr-upstream` returns `example.test → 192.0.2.123` and `router-test.example → 192.0.2.124`. No Ubuntu host or public resolver participates.
 
+Dnsmasq may also open router-local `127.0.0.1:53` and `[::1]:53` sockets plus an IPv6 link-local socket for the address assigned specifically to `hvr-lan`. These are accepted as LAN/router-local binding behavior; they do not constitute general IPv6 routing or DNS support. R7 still rejects the router WAN address, `hvr-wan` link-local addresses, and IPv4/IPv6 wildcard listeners, and actively verifies from `hvr-upstream` that UDP and TCP DNS do not answer through `192.0.2.2`.
+
 The router cache holds 150 entries. Native dnsmasq query, forwarding, reply, and cache messages are written to `/run/home-virtual-router/dns/dnsmasq.log`, which is the path intended for later consumption by the separate observability platform. R7 does not copy or synchronize that log. The R5 firewall has only a forward hook: client DNS addressed to the router uses router-local INPUT/OUTPUT, while forwarded upstream queries originate in `hvr-router`; R7 adds no firewall rules.
 
 `make dns-disable` restarts the same router dnsmasq with the R6 `port=0` DHCP-only configuration and removes the isolated upstream resolver. The existing dnsmasq lease file, dhclient process, dynamic client address, default route, routing, NAT, and firewall remain intact.
@@ -142,7 +144,7 @@ Expected R6 results:
 Expected R7 results:
 
 - `example.test` resolves through `10.0.0.1` to `192.0.2.123`; the alternate test name resolves over TCP.
-- Router DNS listens on UDP/TCP `10.0.0.1:53`, never on `hvr-wan`, and forwards only to the isolated upstream namespace.
+- Router DNS listens on UDP/TCP `10.0.0.1:53`; optional loopback and `hvr-lan` link-local sockets are allowed, while WAN and wildcard exposure are rejected.
 - Repeated queries produce dnsmasq native cache log entries under `/run/home-virtual-router/dns/`.
 - DNS disable leaves the verified R6 DHCP state working.
 

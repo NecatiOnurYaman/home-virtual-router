@@ -629,8 +629,64 @@ class DnsStageTests(unittest.TestCase):
         self.assertIn("bind-interfaces", self.router_config)
         self.assertNotIn("ROUTER_WAN_INTERFACE", self.router_config)
         self.assertNotIn("ROUTER_WAN", self.router_config)
-        self.assertIn('endpoint="$ROUTER_LAN:53"', self.integration_test)
-        self.assertIn('seen["udp"] && seen["tcp"] && !bad', self.integration_test)
+        self.assertIn("validate_router_dns_listeners", self.integration_test)
+        self.assertIn('seen_lan["udp"] && seen_lan["tcp"] && !bad', self.common)
+
+    def run_listener_policy(self, listeners: str, lan_v6: str = "fe80::10") -> subprocess.CompletedProcess[str]:
+        command = (
+            f'source "{TOPOLOGY_COMMON}"; '
+            f'validate_router_dns_listeners 10.0.0.1 192.0.2.2 hvr-lan "{lan_v6}"'
+        )
+        return subprocess.run(
+            ["bash", "-c", command], input=listeners, text=True, capture_output=True
+        )
+
+    def test_listener_policy_requires_ipv4_lan_udp_and_tcp(self) -> None:
+        both = (
+            "udp UNCONN 0 0 10.0.0.1:53 0.0.0.0:*\n"
+            "tcp LISTEN 0 32 10.0.0.1:53 0.0.0.0:*\n"
+        )
+        self.assertEqual(self.run_listener_policy(both).returncode, 0)
+        self.assertNotEqual(self.run_listener_policy(both.splitlines()[0] + "\n").returncode, 0)
+        self.assertNotEqual(self.run_listener_policy(both.splitlines()[1] + "\n").returncode, 0)
+
+    def test_listener_policy_allows_loopback_and_lan_link_local(self) -> None:
+        listeners = (
+            "udp UNCONN 0 0 10.0.0.1:53 0.0.0.0:*\n"
+            "tcp LISTEN 0 32 10.0.0.1:53 0.0.0.0:*\n"
+            "udp UNCONN 0 0 127.0.0.1:53 0.0.0.0:*\n"
+            "tcp LISTEN 0 32 [::1]:53 [::]:*\n"
+            "udp UNCONN 0 0 [fe80::10%hvr-lan]:53 [::]:*\n"
+            "tcp LISTEN 0 32 [fe80::10%hvr-lan]:53 [::]:*\n"
+        )
+        self.assertEqual(self.run_listener_policy(listeners).returncode, 0)
+
+    def test_listener_policy_rejects_wan_and_wildcards(self) -> None:
+        base = (
+            "udp UNCONN 0 0 10.0.0.1:53 0.0.0.0:*\n"
+            "tcp LISTEN 0 32 10.0.0.1:53 0.0.0.0:*\n"
+        )
+        forbidden = (
+            "udp UNCONN 0 0 192.0.2.2:53 0.0.0.0:*\n",
+            "tcp LISTEN 0 32 0.0.0.0:53 0.0.0.0:*\n",
+            "udp UNCONN 0 0 [::]:53 [::]:*\n",
+            "udp UNCONN 0 0 [fe80::20%hvr-wan]:53 [::]:*\n",
+        )
+        for listener in forbidden:
+            with self.subTest(listener=listener):
+                self.assertNotEqual(self.run_listener_policy(base + listener).returncode, 0)
+
+    def test_active_wan_dns_probes_must_fail(self) -> None:
+        self.assertIn(
+            'ip netns exec "$UPSTREAM_NAMESPACE" dig +short +time=1 +tries=1 @"$ROUTER_WAN"',
+            self.integration_test,
+        )
+        self.assertIn(
+            'ip netns exec "$UPSTREAM_NAMESPACE" dig +tcp +short +time=1 +tries=1 @"$ROUTER_WAN"',
+            self.integration_test,
+        )
+        self.assertIn("UDP DNS unexpectedly answered through router WAN", self.integration_test)
+        self.assertIn("TCP DNS unexpectedly answered through router WAN", self.integration_test)
 
     def test_upstream_is_explicit_and_isolated(self) -> None:
         self.assertIn("no-resolv", self.router_config)
