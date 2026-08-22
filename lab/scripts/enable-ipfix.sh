@@ -48,6 +48,15 @@ chmod 0750 "$IPFIX_RUNTIME_DIR"
 rm -f "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_CONTROL_SOCKET" \
   "$IPFIX_STATISTICS_FILE" "$IPFIX_DUMP_FLOWS_FILE" "$IPFIX_EXPIRE_ALL_FILE" \
   "$IPFIX_COMMAND_FILE" "$IPFIX_TEST_PCAP" "$IPFIX_TCPDUMP_FILE" "$IPFIX_OFFLINE_FILE" \
+  "$IPFIX_LIVE_DIAGNOSTIC_FILE" "$IPFIX_VERSION_FILE" \
+  "$IPFIX_RUNTIME_DIR/diagnostic-no-promisc.ctl" \
+  "$IPFIX_RUNTIME_DIR/diagnostic-no-promisc.pid" \
+  "$IPFIX_RUNTIME_DIR/diagnostic-no-promisc.log" \
+  "$IPFIX_RUNTIME_DIR/diagnostic-no-promisc-statistics.txt" \
+  "$IPFIX_RUNTIME_DIR/diagnostic-promisc.ctl" \
+  "$IPFIX_RUNTIME_DIR/diagnostic-promisc.pid" \
+  "$IPFIX_RUNTIME_DIR/diagnostic-promisc.log" \
+  "$IPFIX_RUNTIME_DIR/diagnostic-promisc-statistics.txt" \
   "$IPFIX_COLLECTOR_RESULT" "$IPFIX_COLLECTOR_READY"
 touch "$IPFIX_LOG_FILE"
 chmod 0640 "$IPFIX_LOG_FILE"

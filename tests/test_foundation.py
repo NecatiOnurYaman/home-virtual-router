@@ -33,6 +33,7 @@ DNS_TEST = ROOT / "lab/scripts/test-dns.sh"
 IPFIX_ENABLE = ROOT / "lab/scripts/enable-ipfix.sh"
 IPFIX_DISABLE = ROOT / "lab/scripts/disable-ipfix.sh"
 IPFIX_TEST = ROOT / "lab/scripts/test-ipfix.sh"
+IPFIX_LIVE_DIAGNOSE = ROOT / "lab/scripts/diagnose-ipfix-live.sh"
 IPFIX_RECEIVER = ROOT / "router/scripts/ipfix_test_receiver.py"
 DNSMASQ_CONFIG = ROOT / "router/config/dnsmasq-dhcp.conf.template"
 ROUTER_DNS_CONFIG = ROOT / "router/config/dnsmasq-router-dns.conf.template"
@@ -782,6 +783,7 @@ class R8IpfixTests(unittest.TestCase):
         self.disable = IPFIX_DISABLE.read_text(encoding="utf-8")
         self.integration_test = IPFIX_TEST.read_text(encoding="utf-8")
         self.common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        self.live_diagnostic = IPFIX_LIVE_DIAGNOSE.read_text(encoding="utf-8")
 
     def test_exporter_is_namespace_scoped_ipfix_v10_on_lan(self) -> None:
         self.assertIn('softflowd_command=(softflowd', self.enable)
@@ -862,6 +864,38 @@ class R8IpfixTests(unittest.TestCase):
         self.assertLess(offline, live)
         self.assertLess(live, tracked)
         self.assertLess(tracked, expiry)
+
+    def test_live_diagnostic_traffic_is_bounded(self) -> None:
+        self.assertIn("readonly DIAGNOSTIC_PACKET_COUNT=2048", self.live_diagnostic)
+        self.assertIn("readonly DIAGNOSTIC_PACKET_SIZE=1200", self.live_diagnostic)
+        self.assertIn('ping -q -c "$DIAGNOSTIC_PACKET_COUNT"', self.live_diagnostic)
+        self.assertNotIn("ping -f", self.live_diagnostic)
+
+    def test_live_diagnostic_compares_explicit_promiscuity_variants(self) -> None:
+        self.assertIn('run_live_variant "-N"', self.live_diagnostic)
+        self.assertIn('"$DIAG_NO_PROMISC_STATS" -N', self.live_diagnostic)
+        self.assertIn('run_live_variant "promiscuous"', self.live_diagnostic)
+        self.assertIn('diagnostic did not restore hvr-lan promiscuity state', self.live_diagnostic)
+
+    def test_live_diagnostic_is_namespace_and_project_scoped(self) -> None:
+        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" "${command[@]}"', self.live_diagnostic)
+        self.assertIn('-i "$IPFIX_CAPTURE_INTERFACE"', self.live_diagnostic)
+        self.assertIn('-c "$control_socket"', self.live_diagnostic)
+        self.assertNotIn("/run/softflowd.ctl", self.live_diagnostic)
+        self.assertNotIn("/var/run/softflowd.ctl", self.live_diagnostic)
+        self.assertNotIn("systemctl start", self.live_diagnostic)
+        self.assertNotIn("systemctl stop", self.live_diagnostic)
+        self.assertNotIn("systemctl enable", self.live_diagnostic)
+        self.assertNotIn("systemctl disable", self.live_diagnostic)
+
+    def test_live_diagnostic_outputs_are_project_owned_and_cleaned(self) -> None:
+        self.assertIn('IPFIX_RUNTIME_DIR/diagnostic-no-promisc', self.live_diagnostic)
+        self.assertIn('IPFIX_RUNTIME_DIR/diagnostic-promisc', self.live_diagnostic)
+        self.assertIn('IPFIX_LIVE_DIAGNOSTIC_FILE', self.live_diagnostic)
+        self.assertIn('IPFIX_VERSION_FILE', self.live_diagnostic)
+        self.assertIn('stop_project_process_if_present "$active_pid_file"', self.live_diagnostic)
+        self.assertIn('diagnostic-no-promisc-statistics.txt', self.common)
+        self.assertIn('diagnostic-promisc-statistics.txt', self.common)
 
     def test_host_network_and_services_are_not_modified(self) -> None:
         combined = self.enable + self.disable + self.integration_test
