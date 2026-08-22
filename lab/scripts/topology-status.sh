@@ -158,6 +158,7 @@ printf '  collector: udp://%s:%s in %s\n' \
 printf '  protocol: IPFIX v10, Observation Domain ID %s\n' "$IPFIX_OBSERVATION_DOMAIN_ID"
 printf '  runtime directory: %s\n' "$IPFIX_RUNTIME_DIR"
 printf '  exporter log: %s\n' "$IPFIX_LOG_FILE"
+printf '  control socket: %s\n' "$IPFIX_CONTROL_SOCKET"
 if [ -s "$IPFIX_COLLECTOR_RESULT" ]; then
   validated_datagrams="$(sed -n 's/^[[:space:]]*"datagrams": \([0-9][0-9]*\),*$/\1/p' "$IPFIX_COLLECTOR_RESULT" | head -n 1)"
   printf '  last test collector datagrams: %s\n' "${validated_datagrams:-unknown}"
@@ -166,8 +167,17 @@ else
 fi
 if softflowd_running; then
   printf '  project softflowd process: running\n'
+  if command -v softflowctl >/dev/null 2>&1 && [ -S "$IPFIX_CONTROL_SOCKET" ]; then
+    printf '  project exporter statistics:\n'
+    ip netns exec "$ROUTER_NAMESPACE" softflowctl -c "$IPFIX_CONTROL_SOCKET" statistics 2>/dev/null |
+      sed 's/^/    /' || printf '    unavailable\n'
+  fi
   printf '  R8 IPFIX: enabled\n'
 else
   printf '  project softflowd process: stopped\n'
   printf '  R8 IPFIX: disabled or incomplete\n'
+fi
+if command -v systemctl >/dev/null 2>&1; then
+  printf '  Ubuntu host softflowd.service: %s (reported only; never controlled)\n' \
+    "$(systemctl is-active softflowd.service 2>/dev/null || true)"
 fi

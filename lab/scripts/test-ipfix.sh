@@ -11,11 +11,13 @@ require_lab_environment
 require_root
 load_topology_config
 validate_topology_names
-for required_command in ip softflowd python3 ping dig nft sysctl systemctl; do
+for required_command in ip softflowd softflowctl python3 ping dig nft sysctl systemctl; do
   command -v "$required_command" >/dev/null 2>&1 || die "$required_command is required"
 done
+require_project_ipfix_control_socket
 require_r2_topology
 softflowd_running || die "R8 project softflowd exporter is not running"
+[ -S "$IPFIX_CONTROL_SOCKET" ] || die "project softflowd control socket is absent"
 dns_r7_enabled || die "R7 DNS is not active"
 client_address="$(client_dhcp_address)" || die "R6 dynamic client address is invalid"
 snapshot_r6_host_state
@@ -51,8 +53,20 @@ done
 [ -f "$IPFIX_COLLECTOR_READY" ] || die "IPFIX test receiver did not become ready"
 
 ip netns exec "$CLIENT_NAMESPACE" ping -c 2 -W 1 "$UPSTREAM_GATEWAY" >/dev/null
-ip netns exec "$CLIENT_NAMESPACE" dig +short +time=2 +tries=1 @"$ROUTER_LAN" "$DNS_TEST_NAME" A >/dev/null
-ip netns exec "$CLIENT_NAMESPACE" dig +tcp +short +time=2 +tries=1 @"$ROUTER_LAN" "$DNS_TEST_NAME_ALT" A >/dev/null
+ip netns exec "$CLIENT_NAMESPACE" dig +short +time=2 +tries=1 @"$DNS_UPSTREAM" "$DNS_TEST_NAME" A >/dev/null
+ip netns exec "$CLIENT_NAMESPACE" dig +tcp +short +time=2 +tries=1 @"$DNS_UPSTREAM" "$DNS_TEST_NAME_ALT" A >/dev/null
+
+tracked_flows=""
+for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  tracked_flows="$(ip netns exec "$ROUTER_NAMESPACE" softflowctl \
+    -c "$IPFIX_CONTROL_SOCKET" dump-flows 2>/dev/null || true)"
+  printf '%s\n' "$tracked_flows" | grep -F -- "$client_address" >/dev/null && break
+  sleep 0.05
+done
+printf '%s\n' "$tracked_flows" | grep -F -- "$client_address" >/dev/null || \
+  die "softflowd did not track fresh traffic from the dynamic client"
+ip netns exec "$ROUTER_NAMESPACE" softflowctl \
+  -c "$IPFIX_CONTROL_SOCKET" expire-all >/dev/null
 
 if ! wait "$collector_pid"; then
   collector_pid=""

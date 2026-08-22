@@ -788,19 +788,56 @@ class R8IpfixTests(unittest.TestCase):
         self.assertIn('-i "$IPFIX_CAPTURE_INTERFACE"', self.enable)
         self.assertIn('-v 10 -P udp', self.enable)
         self.assertIn('installed softflowd does not advertise IPFIX v10 support', self.enable)
+        self.assertIn('installed softflowctl does not advertise the expire-all command', self.enable)
         self.assertIn('-n "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT"', self.enable)
         self.assertIn('IPFIX_CAPTURE_INTERFACE=hvr-lan', (ROOT / "lab/config/defaults.env").read_text())
 
+    def test_control_socket_and_forced_expiry_are_project_scoped(self) -> None:
+        self.assertIn(
+            'readonly IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"',
+            self.common,
+        )
+        self.assertIn('-c "$IPFIX_CONTROL_SOCKET"', self.enable)
+        self.assertIn('-c "$IPFIX_CONTROL_SOCKET" expire-all', self.integration_test)
+        self.assertNotIn('-c /run/softflowd.ctl', self.enable + self.disable + self.integration_test)
+        self.assertNotIn('-c /var/run/softflowd.ctl', self.enable + self.disable + self.integration_test)
+
+    def test_receiver_precedes_traffic_and_expiry_precedes_wait(self) -> None:
+        receiver = self.integration_test.index('python3 "$IPFIX_RECEIVER"')
+        ready = self.integration_test.index('IPFIX test receiver did not become ready')
+        traffic = self.integration_test.index('ping -c 2', ready)
+        tracked = self.integration_test.index('dump-flows', traffic)
+        expiry = self.integration_test.index('expire-all', tracked)
+        wait = self.integration_test.index('wait "$collector_pid"', expiry)
+        self.assertLess(receiver, ready)
+        self.assertLess(ready, traffic)
+        self.assertLess(traffic, tracked)
+        self.assertLess(tracked, expiry)
+        self.assertLess(expiry, wait)
+
+    def test_failure_cleanup_targets_only_temporary_receiver(self) -> None:
+        self.assertIn("trap cleanup_ipfix_test EXIT INT TERM", self.integration_test)
+        self.assertIn('project_process_matches "$collector_pid" python3 "$IPFIX_RECEIVER"', self.integration_test)
+        self.assertIn('kill "$collector_pid"', self.integration_test)
+        self.assertNotIn("pkill", self.integration_test)
+        self.assertNotIn("killall", self.integration_test)
+
     def test_host_network_and_services_are_not_modified(self) -> None:
         combined = self.enable + self.disable + self.integration_test
-        for forbidden in ("systemctl start", "systemctl stop", "nft add", "nft delete", "route add", "route del"):
+        for forbidden in (
+            "systemctl start", "systemctl stop", "systemctl restart",
+            "systemctl enable", "systemctl disable", "nft add", "nft delete",
+            "route add", "route del",
+        ):
             self.assertNotIn(forbidden, combined)
         for script in (self.enable, self.disable, self.integration_test):
             self.assertIn("snapshot_r6_host_state", script)
             self.assertIn("verify_r6_host_state", script)
 
     def test_cleanup_is_project_scoped_and_preserves_r7(self) -> None:
-        self.assertIn('stop_project_process_if_present "$IPFIX_PID_FILE"', self.disable)
+        self.assertIn("stop_project_softflowd_if_present", self.disable)
+        self.assertIn("if softflowd_running; then", self.common)
+        self.assertIn("refusing to stop a PID that is not an exact current or legacy project softflowd instance", self.common)
         self.assertIn("remove_project_ipfix_files", self.disable)
         self.assertIn("dns_r7_enabled", self.disable)
         self.assertNotIn("pkill", self.enable + self.disable)
@@ -810,6 +847,7 @@ class R8IpfixTests(unittest.TestCase):
     def test_dependency_checker_includes_softflowd(self) -> None:
         checker = CHECKER.read_text(encoding="utf-8")
         self.assertIn("softflowd", checker)
+        self.assertIn("softflowctl", checker)
 
     def test_receiver_decodes_template_and_pre_nat_record(self) -> None:
         receiver_spec = importlib.util.spec_from_file_location("ipfix_receiver", IPFIX_RECEIVER)

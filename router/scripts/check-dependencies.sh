@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-default_commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig softflowd"
+default_commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig softflowd softflowctl"
 commands="${HVR_CHECK_COMMANDS:-$default_commands}"
 missing=0
 
@@ -31,7 +31,7 @@ for command_name in $commands; do
       systemctl) package="systemd" ;;
       getent) package="libc-bin" ;;
       dig) package="dnsutils" ;;
-      softflowd) package="softflowd" ;;
+      softflowd|softflowctl) package="softflowd" ;;
       *) package="package providing $command_name" ;;
     esac
     printf '  missing %s (Ubuntu/Debian package: %s)\n' "$command_name" "$package"

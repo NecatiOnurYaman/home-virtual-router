@@ -32,6 +32,7 @@ readonly UPSTREAM_DNS_LOG_FILE="$DNS_RUNTIME_DIR/upstream-dnsmasq.log"
 readonly IPFIX_RUNTIME_DIR="/run/home-virtual-router/ipfix"
 readonly IPFIX_PID_FILE="$IPFIX_RUNTIME_DIR/softflowd.pid"
 readonly IPFIX_LOG_FILE="$IPFIX_RUNTIME_DIR/softflowd.log"
+readonly IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"
 readonly IPFIX_COLLECTOR_RESULT="$IPFIX_RUNTIME_DIR/collector-result.json"
 readonly IPFIX_COLLECTOR_READY="$IPFIX_RUNTIME_DIR/collector.ready"
 readonly IPFIX_RECEIVER="$HVR_REPO_DIR/router/scripts/ipfix_test_receiver.py"
@@ -619,11 +620,47 @@ softflowd_running() {
   pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
   collector="$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT"
   project_process_matches "$pid" softflowd "$collector" || return 1
-  project_process_matches "$pid" softflowd "$IPFIX_CAPTURE_INTERFACE"
+  project_process_matches "$pid" softflowd "$IPFIX_CAPTURE_INTERFACE" || return 1
+  project_process_matches "$pid" softflowd "$IPFIX_CONTROL_SOCKET"
+}
+
+require_project_ipfix_control_socket() {
+  [ "$IPFIX_CONTROL_SOCKET" = "/run/home-virtual-router/ipfix/softflowd.ctl" ] ||
+    die "IPFIX control socket is not the exact project-owned path"
+  case "$IPFIX_CONTROL_SOCKET" in
+    /run/softflowd.ctl|/var/run/softflowd.ctl)
+      die "refusing the distro softflowd control socket"
+      ;;
+  esac
+}
+
+stop_project_softflowd_if_present() {
+  local pid
+  [ -e "$IPFIX_PID_FILE" ] || return 0
+  pid="$(read_project_pid "$IPFIX_PID_FILE")" || {
+    rm -f -- "$IPFIX_PID_FILE"
+    return 0
+  }
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f -- "$IPFIX_PID_FILE"
+    return 0
+  fi
+  if softflowd_running; then
+    stop_project_process "$IPFIX_PID_FILE" softflowd "$IPFIX_CONTROL_SOCKET"
+    return 0
+  fi
+  # Permit safe cleanup of the immediately preceding R8 invocation, which used
+  # the same project PID, collector, and hvr-lan capture but lacked -c.
+  if project_process_matches "$pid" softflowd "$IPFIX_COLLECTOR_HOST:$IPFIX_COLLECTOR_PORT" &&
+     project_process_matches "$pid" softflowd "$IPFIX_CAPTURE_INTERFACE"; then
+    stop_project_process "$IPFIX_PID_FILE" softflowd "$IPFIX_CAPTURE_INTERFACE"
+    return 0
+  fi
+  die "refusing to stop a PID that is not an exact current or legacy project softflowd instance"
 }
 
 remove_project_ipfix_files() {
-  rm -f -- "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_COLLECTOR_RESULT" \
+  rm -f -- "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_CONTROL_SOCKET" "$IPFIX_COLLECTOR_RESULT" \
     "$IPFIX_COLLECTOR_READY"
   rmdir "$IPFIX_RUNTIME_DIR" 2>/dev/null || true
 }
