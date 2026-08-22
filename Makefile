@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -73,3 +73,19 @@ firewall-test:
 firewall-disable:
 	@echo "Deleting only the project R5 filter table requires root."
 	sudo lab/scripts/disable-firewall.sh
+
+dhcp-enable:
+	@echo "Starting project DHCP inside hvr-router and leasing hvr-client requires root."
+	sudo lab/scripts/enable-dhcp.sh
+
+dhcp-status:
+	@echo "Inspecting project DHCP process, address, and lease state requires root."
+	sudo lab/scripts/topology-status.sh
+
+dhcp-test:
+	@echo "Testing the R6 dynamic client lease and connectivity requires root."
+	sudo lab/scripts/test-dhcp.sh
+
+dhcp-disable:
+	@echo "Stopping only project DHCP state and restoring the R5 static client requires root."
+	sudo lab/scripts/disable-dhcp.sh

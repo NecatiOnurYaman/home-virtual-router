@@ -14,6 +14,7 @@ REQUIRED = {
     "UPSTREAM_INTERFACE", "ROUTER_WAN_INTERFACE", "ROUTER_LAN_INTERFACE",
     "CLIENT_INTERFACE",
     "NAT_TABLE", "NAT_CHAIN", "FILTER_TABLE", "FILTER_CHAIN",
+    "DHCP_RANGE_START", "DHCP_RANGE_END", "DHCP_LEASE_TIME", "DHCP_DNS_SERVER",
 }
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=([^\s#]+)")
 NAME = re.compile(r"hvr-[a-z0-9_.-]+")
@@ -41,6 +42,8 @@ def parse(path: Path) -> dict[str, str]:
 def validate(values: dict[str, str]) -> None:
     upstream = ipaddress.ip_network(values["UPSTREAM_SUBNET"], strict=True)
     lan = ipaddress.ip_network(values["LAN_SUBNET"], strict=True)
+    if lan.prefixlen != 24:
+        raise ValueError("R6 DHCP currently requires LAN_SUBNET to be /24")
     if not upstream.subnet_of(ipaddress.ip_network("192.0.2.0/24")):
         raise ValueError("UPSTREAM_SUBNET must be within RFC 5737 TEST-NET-1 (192.0.2.0/24)")
     for key in ("UPSTREAM_GATEWAY", "ROUTER_WAN"):
@@ -50,6 +53,20 @@ def validate(values: dict[str, str]) -> None:
         raise ValueError("ROUTER_LAN must be within LAN_SUBNET")
     if ipaddress.ip_address(values["CLIENT_ADDRESS"]) not in lan:
         raise ValueError("CLIENT_ADDRESS must be within LAN_SUBNET")
+    dhcp_start = ipaddress.ip_address(values["DHCP_RANGE_START"])
+    dhcp_end = ipaddress.ip_address(values["DHCP_RANGE_END"])
+    if dhcp_start not in lan or dhcp_end not in lan:
+        raise ValueError("DHCP range must be within LAN_SUBNET")
+    if int(dhcp_start) > int(dhcp_end):
+        raise ValueError("DHCP_RANGE_START must not exceed DHCP_RANGE_END")
+    if ipaddress.ip_address(values["ROUTER_LAN"]) in (dhcp_start, dhcp_end) or (
+        int(dhcp_start) <= int(ipaddress.ip_address(values["ROUTER_LAN"])) <= int(dhcp_end)
+    ):
+        raise ValueError("DHCP range must exclude ROUTER_LAN")
+    if ipaddress.ip_address(values["DHCP_DNS_SERVER"]) not in lan:
+        raise ValueError("DHCP_DNS_SERVER must be within LAN_SUBNET")
+    if not re.fullmatch(r"[1-9][0-9]*[mhd]", values["DHCP_LEASE_TIME"]):
+        raise ValueError("DHCP_LEASE_TIME must be a positive duration ending in m, h, or d")
     if upstream.overlaps(lan):
         raise ValueError("UPSTREAM_SUBNET and LAN_SUBNET must not overlap")
     address_keys = ("UPSTREAM_GATEWAY", "ROUTER_WAN", "ROUTER_LAN", "CLIENT_ADDRESS")

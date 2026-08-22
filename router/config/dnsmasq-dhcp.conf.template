@@ -1,0 +1,13 @@
+# R6 lab-only DHCP template. Rendered from validated defaults at runtime.
+port=0
+interface=@ROUTER_LAN_INTERFACE@
+bind-interfaces
+dhcp-authoritative
+dhcp-range=@DHCP_RANGE_START@,@DHCP_RANGE_END@,255.255.255.0,@DHCP_LEASE_TIME@
+dhcp-option=option:router,@ROUTER_LAN@
+dhcp-option=option:netmask,255.255.255.0
+dhcp-option=option:dns-server,@DHCP_DNS_SERVER@
+dhcp-leasefile=@DNSMASQ_LEASE_FILE@
+pid-file=@DNSMASQ_PID_FILE@
+log-facility=@DNSMASQ_LOG_FILE@
+log-dhcp

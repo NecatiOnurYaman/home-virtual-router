@@ -97,3 +97,31 @@ if namespace_exists "$ROUTER_NAMESPACE" && command -v nft >/dev/null 2>&1; then
 else
   printf '  R5 firewall: unavailable (router namespace or nft missing)\n'
 fi
+
+printf '\n[R6 DHCP state]\n'
+printf '  configured range: %s - %s (%s)\n' "$DHCP_RANGE_START" "$DHCP_RANGE_END" "$DHCP_LEASE_TIME"
+printf '  lease file: %s\n' "$DNSMASQ_LEASE_FILE"
+if dnsmasq_dhcp_running; then
+  printf '  dnsmasq DHCP process: running\n'
+else
+  printf '  dnsmasq DHCP process: stopped\n'
+fi
+printf '  client IPv4 addresses:\n'
+if namespace_exists "$CLIENT_NAMESPACE"; then
+  ip -n "$CLIENT_NAMESPACE" -brief -4 address show dev "$CLIENT_INTERFACE" | sed 's/^/    /'
+  printf '  client default route:\n'
+  ip -n "$CLIENT_NAMESPACE" route show default | sed 's/^/    /'
+else
+  printf '    client namespace absent\n'
+fi
+printf '  current lease entries:\n'
+if [ -s "$DNSMASQ_LEASE_FILE" ]; then
+  sed 's/^/    /' "$DNSMASQ_LEASE_FILE"
+else
+  printf '    none\n'
+fi
+if dnsmasq_dhcp_running && client_dhcp_address >/dev/null && client_default_route_exists; then
+  printf '  R6 DHCP: enabled\n'
+else
+  printf '  R6 DHCP: disabled or incomplete\n'
+fi

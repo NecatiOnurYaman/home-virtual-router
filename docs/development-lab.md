@@ -43,6 +43,22 @@ everything else                          drop (chain policy)
 
 Invalid packets are rejected because they cannot be associated safely with a valid connection. A LAN client may start a connection, and its reply is accepted through kernel connection tracking as established traffic. A new unsolicited WAN-originated forwarded flow hits an explicit counted drop rule, while any other unmatched traffic falls through to the default-drop policy. R5 adds no INPUT or OUTPUT chains, so router-local management hardening remains outside this stage.
 
+R6 replaces the test client's static address with DHCP from a dedicated dnsmasq process inside `hvr-router`:
+
+```text
+hvr-client                    hvr-router / dnsmasq
+    DHCPDISCOVER  ---------->
+                  <---------- DHCPOFFER
+    DHCPREQUEST   ---------->
+                  <---------- DHCPACK
+
+Result: 10.0.0.100–10.0.0.199/24, gateway 10.0.0.1, DNS option 10.0.0.1
+```
+
+Dnsmasq binds only to `hvr-lan`; `port=0` disables its DNS service until R7. DHCP traffic is to and from the router itself on UDP 67/68, so it does not traverse the R5 forward chain. The custom dhclient hook writes the advertised DNS value to `/run/home-virtual-router/dhcp/client-resolv.conf` instead of changing the Ubuntu VM's `/etc/resolv.conf`.
+
+Leases are stored at `/run/home-virtual-router/dhcp/dnsmasq.leases` in dnsmasq's five-field format: `<expiry_epoch> <mac> <ip> <hostname> <client_id>`. The separate Home Network Observability Platform can consume this file later; R6 does not synchronize repositories. This dynamic workflow resembles a phone, television, or laptop joining the future home LAN.
+
 ## Safety boundary
 
 Project scripts do not launch or control UTM and must never alter macOS networking. Future networking commands belong inside the Ubuntu VM and must use the shared guards in `router/scripts/safety.sh`, explicit `hvr-` namespace and interface names, and targeted cleanup.
@@ -57,7 +73,7 @@ sudo touch /etc/home-virtual-router-lab
 
 The repository does not create this marker and cannot create it on macOS. Removing the marker disables the shared lab-environment guard.
 
-`lab/config/defaults.env` is parsed as data and validated before topology creation. Interface and nftables object names must use the `hvr-*` allowlist. Creation refuses pre-existing exact namespace or host interface names. R4 also refuses a conflicting `ip hvr-nat` table. Topology, routing, and NAT operations snapshot the Ubuntu VM default route and forwarding value; NAT operations additionally snapshot the stateless host nftables ruleset. These host values are verified unchanged afterward.
+`lab/config/defaults.env` is parsed as data and validated before topology creation. Interface and nftables object names must use the `hvr-*` allowlist. Creation refuses pre-existing exact namespace or host interface names. R4 also refuses a conflicting `ip hvr-nat` table. R6 snapshots the host default route, forwarding, nftables, DNS configuration, dnsmasq system-service state, and interface configuration. It never invokes host `systemctl` mutations or writes the host resolver configuration.
 
 ## Commands
 
@@ -78,6 +94,10 @@ The repository does not create this marker and cannot create it on macOS. Removi
 - `make firewall-status` displays forward policy, rules, and counters.
 - `make firewall-test` verifies client-initiated ping/TCP and blocked unsolicited WAN TCP.
 - `make firewall-disable` deletes only `inet hvr-filter`, leaving R4 NAT intact.
+- `make dhcp-enable` starts project dnsmasq/dhclient instances and replaces the static client address with a lease.
+- `make dhcp-status` reports process state, pool, client address/route, and lease entries.
+- `make dhcp-test` validates the dynamic address, route, resolver option, lease, hostname, and connectivity.
+- `make dhcp-disable` stops only project processes and restores the exact R5 static client state.
 - `make lab-destroy` explicitly removes only the configured namespaces and exact-name partial veth endpoints.
 
 The create, status, test, and destroy targets visibly use `sudo` because namespace administration requires root. Creation fails if the topology already exists. Teardown tolerates missing pieces and never performs wildcard or host-wide cleanup.
@@ -95,5 +115,13 @@ Expected R5 results:
 - A temporary isolated upstream route makes the client reachable for a controlled test, but a new WAN-to-LAN TCP connection is dropped by the firewall.
 - The temporary route is always removed after the test.
 - Disabling the firewall leaves R4 masquerading operational.
+
+Expected R6 results:
+
+- The client has exactly one global `/24` address from `10.0.0.100–10.0.0.199`.
+- Its default route is learned via `10.0.0.1`, and the project resolver file records `10.0.0.1` without providing DNS service yet.
+- The lease file matches the client MAC/address and contains hostname `hvr-client`.
+- Router, WAN, and upstream pings continue through R3–R5.
+- DHCP disable restores `10.0.0.10/24` and its static default route for staged teardown.
 
 VM lifecycle and configuration remain explicit UTM administration tasks outside this repository. Disable routing before inspecting the R2 baseline, then use `make lab-destroy` and confirm `make lab-info` reports all three namespaces absent.

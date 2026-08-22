@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-default_commands="ip nft dnsmasq sysctl ping curl tcpdump python3 ss systemctl"
+default_commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl"
 commands="${HVR_CHECK_COMMANDS:-$default_commands}"
 missing=0
 
@@ -21,6 +21,7 @@ for command_name in $commands; do
       ip) package="iproute2" ;;
       nft) package="nftables" ;;
       dnsmasq) package="dnsmasq" ;;
+      dhclient) package="isc-dhcp-client" ;;
       sysctl) package="procps" ;;
       ping) package="iputils-ping" ;;
       curl) package="curl" ;;

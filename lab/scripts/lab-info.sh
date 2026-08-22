@@ -5,7 +5,7 @@ repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 config="$repo_dir/lab/config/defaults.env"
 checker="$repo_dir/router/scripts/check-dependencies.sh"
 
-printf 'Home Virtual Router lab: Stage R5 stateful IPv4 firewall\n'
+printf 'Home Virtual Router lab: Stage R6 DHCPv4\n'
 printf 'Repository: %s\n' "$repo_dir"
 if [ -r /etc/os-release ]; then
   distribution="$(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | head -n 1 | sed 's/^"//; s/"$//')"

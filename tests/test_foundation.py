@@ -22,6 +22,11 @@ NAT_TEST = ROOT / "lab/scripts/test-nat.sh"
 FIREWALL_ENABLE = ROOT / "lab/scripts/enable-firewall.sh"
 FIREWALL_DISABLE = ROOT / "lab/scripts/disable-firewall.sh"
 FIREWALL_TEST = ROOT / "lab/scripts/test-firewall.sh"
+DHCP_ENABLE = ROOT / "lab/scripts/enable-dhcp.sh"
+DHCP_DISABLE = ROOT / "lab/scripts/disable-dhcp.sh"
+DHCP_TEST = ROOT / "lab/scripts/test-dhcp.sh"
+DNSMASQ_CONFIG = ROOT / "router/config/dnsmasq-dhcp.conf.template"
+DHCLIENT_HOOK = ROOT / "router/scripts/dhclient-lab-hook.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
@@ -45,6 +50,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(values["NAT_CHAIN"], "hvr-postrouting")
         self.assertEqual(values["FILTER_TABLE"], "hvr-filter")
         self.assertEqual(values["FILTER_CHAIN"], "hvr-forward")
+        self.assertEqual(values["DHCP_RANGE_START"], "10.0.0.100")
+        self.assertEqual(values["DHCP_RANGE_END"], "10.0.0.199")
+        self.assertEqual(values["DHCP_DNS_SERVER"], "10.0.0.1")
 
     def test_rejects_executable_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -67,6 +75,16 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_config.validate(values)
         values["CLIENT_INTERFACE"] = "hvr-interface-name-too-long"
+        with self.assertRaises(ValueError):
+            validate_config.validate(values)
+
+    def test_rejects_invalid_dhcp_pool(self) -> None:
+        values = validate_config.parse(ROOT / "lab/config/defaults.env")
+        values["DHCP_RANGE_START"] = "10.0.0.1"
+        with self.assertRaises(ValueError):
+            validate_config.validate(values)
+        values = validate_config.parse(ROOT / "lab/config/defaults.env")
+        values["DHCP_RANGE_END"] = "10.0.1.10"
         with self.assertRaises(ValueError):
             validate_config.validate(values)
 
@@ -370,6 +388,77 @@ class FirewallStageTests(unittest.TestCase):
             "drop_packets_after=\"$(filter_rule_packet_count hvr-r5-wan-lan-drop)\"",
             self.integration_test,
         )
+
+
+class DhcpStageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enable = DHCP_ENABLE.read_text(encoding="utf-8")
+        self.disable = DHCP_DISABLE.read_text(encoding="utf-8")
+        self.integration_test = DHCP_TEST.read_text(encoding="utf-8")
+        self.dnsmasq = DNSMASQ_CONFIG.read_text(encoding="utf-8")
+        self.hook = DHCLIENT_HOOK.read_text(encoding="utf-8")
+
+    def test_dnsmasq_is_dhcp_only_and_lan_bound(self) -> None:
+        self.assertIn("port=0", self.dnsmasq)
+        self.assertIn("interface=@ROUTER_LAN_INTERFACE@", self.dnsmasq)
+        self.assertIn("bind-interfaces", self.dnsmasq)
+        self.assertNotIn("interface=hvr-wan", self.dnsmasq)
+        common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        self.assertIn("printf 'interface=%s\\n' \"$ROUTER_LAN_INTERFACE\"", common)
+
+    def test_range_and_options_match_r6_defaults(self) -> None:
+        self.assertIn(
+            "dhcp-range=@DHCP_RANGE_START@,@DHCP_RANGE_END@,255.255.255.0,@DHCP_LEASE_TIME@",
+            self.dnsmasq,
+        )
+        self.assertIn("dhcp-option=option:router,@ROUTER_LAN@", self.dnsmasq)
+        self.assertIn("dhcp-option=option:netmask,255.255.255.0", self.dnsmasq)
+        self.assertIn("dhcp-option=option:dns-server,@DHCP_DNS_SERVER@", self.dnsmasq)
+
+    def test_lease_and_process_files_are_project_owned(self) -> None:
+        self.assertIn(
+            "dhcp-leasefile=@DNSMASQ_LEASE_FILE@",
+            self.dnsmasq,
+        )
+        self.assertIn("pid-file=@DNSMASQ_PID_FILE@", self.dnsmasq)
+        self.assertNotIn("/var/lib/misc", self.dnsmasq)
+
+    def test_dnsmasq_and_dhclient_are_namespace_scoped(self) -> None:
+        self.assertIn(
+            'ip netns exec "$ROUTER_NAMESPACE" dnsmasq --conf-file="$DNSMASQ_CONFIG"',
+            self.enable,
+        )
+        self.assertIn('ip netns exec "$CLIENT_NAMESPACE" dhclient -4 -1 -v', self.enable)
+        self.assertNotIn("systemctl start", self.enable + self.disable)
+        self.assertNotIn("systemctl stop", self.enable + self.disable)
+
+    def test_disable_targets_project_pid_and_restores_static_state(self) -> None:
+        self.assertIn(
+            'stop_project_process "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"',
+            self.disable,
+        )
+        self.assertNotIn("killall", self.disable)
+        self.assertNotIn("pkill", self.disable)
+        self.assertIn(
+            'address replace "$CLIENT_ADDRESS/$lan_prefix" dev "$CLIENT_INTERFACE"',
+            self.disable,
+        )
+
+    def test_hook_never_writes_host_resolv_conf(self) -> None:
+        self.assertNotIn("/etc/resolv.conf", self.hook)
+        self.assertIn("client-resolv.conf", self.hook)
+        self.assertIn('send host-name "hvr-client";', (ROOT / "router/config/dhclient.conf").read_text())
+
+    def test_integration_checks_dynamic_route_lease_and_hostname(self) -> None:
+        self.assertIn('dynamic_address="$(client_dhcp_address)"', self.integration_test)
+        self.assertIn("client_default_route_exists", self.integration_test)
+        self.assertIn('$4 == "hvr-client"', self.integration_test)
+        self.assertIn("$2 == mac && $3 == address", self.integration_test)
+
+    def test_r6_snapshots_host_dns_service_and_interfaces(self) -> None:
+        for script in (self.enable, self.disable, self.integration_test):
+            self.assertIn("snapshot_r6_host_state", script)
+            self.assertIn("verify_r6_host_state", script)
 
 
 if __name__ == "__main__":

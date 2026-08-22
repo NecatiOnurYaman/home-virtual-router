@@ -6,6 +6,18 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly HVR_REPO_DIR="$(cd "$script_dir/../.." && pwd)"
 readonly HVR_CONFIG="$HVR_REPO_DIR/lab/config/defaults.env"
 readonly HVR_VALIDATOR="$HVR_REPO_DIR/router/scripts/validate_config.py"
+readonly DHCP_RUNTIME_DIR="/run/home-virtual-router/dhcp"
+readonly DNSMASQ_CONFIG_TEMPLATE="$HVR_REPO_DIR/router/config/dnsmasq-dhcp.conf.template"
+readonly DNSMASQ_CONFIG="$DHCP_RUNTIME_DIR/dnsmasq.conf"
+readonly DHCLIENT_CONFIG="$HVR_REPO_DIR/router/config/dhclient.conf"
+readonly DHCLIENT_HOOK="$HVR_REPO_DIR/router/scripts/dhclient-lab-hook.sh"
+readonly DNSMASQ_PID_FILE="$DHCP_RUNTIME_DIR/dnsmasq.pid"
+readonly DNSMASQ_LEASE_FILE="$DHCP_RUNTIME_DIR/dnsmasq.leases"
+readonly DNSMASQ_LOG_FILE="$DHCP_RUNTIME_DIR/dnsmasq.log"
+readonly DHCLIENT_PID_FILE="$DHCP_RUNTIME_DIR/dhclient.pid"
+readonly DHCLIENT_LEASE_FILE="$DHCP_RUNTIME_DIR/dhclient.leases"
+readonly DHCP_CLIENT_STATE_FILE="$DHCP_RUNTIME_DIR/client-state.env"
+readonly DHCP_CLIENT_RESOLV_FILE="$DHCP_RUNTIME_DIR/client-resolv.conf"
 
 # These variables are populated only from an allowlist after Python validation.
 UPSTREAM_SUBNET=""
@@ -25,6 +37,10 @@ NAT_TABLE=""
 NAT_CHAIN=""
 FILTER_TABLE=""
 FILTER_CHAIN=""
+DHCP_RANGE_START=""
+DHCP_RANGE_END=""
+DHCP_LEASE_TIME=""
+DHCP_DNS_SERVER=""
 
 load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
@@ -47,6 +63,10 @@ load_topology_config() {
       NAT_CHAIN) NAT_CHAIN="$value" ;;
       FILTER_TABLE) FILTER_TABLE="$value" ;;
       FILTER_CHAIN) FILTER_CHAIN="$value" ;;
+      DHCP_RANGE_START) DHCP_RANGE_START="$value" ;;
+      DHCP_RANGE_END) DHCP_RANGE_END="$value" ;;
+      DHCP_LEASE_TIME) DHCP_LEASE_TIME="$value" ;;
+      DHCP_DNS_SERVER) DHCP_DNS_SERVER="$value" ;;
     esac
   done < "$HVR_CONFIG"
 }
@@ -174,6 +194,25 @@ verify_host_nftables_unchanged() {
   [ "$before" = "$after" ] || die "the Ubuntu VM host nftables ruleset changed unexpectedly"
 }
 
+capture_host_dns_config() {
+  printf 'target=%s\n' "$(readlink /etc/resolv.conf 2>/dev/null || true)"
+  cat /etc/resolv.conf 2>/dev/null || true
+}
+
+capture_host_dnsmasq_service_state() {
+  systemctl show dnsmasq.service --property=LoadState,ActiveState,UnitFileState 2>&1 || true
+}
+
+capture_host_interface_state() {
+  ip -o link show
+  ip -o -4 address show
+}
+
+verify_snapshot_unchanged() {
+  local label="$1" before="$2" after="$3"
+  [ "$before" = "$after" ] || die "$label changed unexpectedly"
+}
+
 router_nft() {
   ip netns exec "$ROUTER_NAMESPACE" nft "$@"
 }
@@ -263,4 +302,118 @@ require_r4_nat_state() {
   if ip -n "$UPSTREAM_NAMESPACE" route show "$LAN_SUBNET" | grep -q .; then
     die "R4 requires no upstream route to $LAN_SUBNET"
   fi
+}
+
+read_project_pid() {
+  local file="$1" pid
+  [ -r "$file" ] || return 1
+  pid="$(cat "$file")"
+  case "$pid" in *[!0-9]*|'') return 1 ;; esac
+  printf '%s' "$pid"
+}
+
+project_process_matches() {
+  local pid="$1" executable="$2" marker="$3" command_line
+  [ -r "/proc/$pid/cmdline" ] || return 1
+  command_line="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
+  printf '%s\n' "$command_line" | grep -F -- "$executable" >/dev/null || return 1
+  printf '%s\n' "$command_line" | grep -F -- "$marker" >/dev/null
+}
+
+stop_project_process() {
+  local file="$1" executable="$2" marker="$3" pid attempt
+  pid="$(read_project_pid "$file")" || return 0
+  project_process_matches "$pid" "$executable" "$marker" ||
+    die "PID file $file does not identify the expected project process"
+  kill "$pid"
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.05
+  done
+  kill -0 "$pid" 2>/dev/null && die "project process $pid did not stop"
+  rm -f "$file"
+}
+
+dnsmasq_dhcp_running() {
+  local pid
+  pid="$(read_project_pid "$DNSMASQ_PID_FILE")" || return 1
+  project_process_matches "$pid" dnsmasq "$DNSMASQ_CONFIG"
+}
+
+dhclient_running() {
+  local pid
+  pid="$(read_project_pid "$DHCLIENT_PID_FILE")" || return 1
+  project_process_matches "$pid" dhclient "$CLIENT_INTERFACE"
+}
+
+address_in_dhcp_pool() {
+  local address="$1" host_number start_number end_number
+  case "$address" in 10.0.0.*) ;; *) return 1 ;; esac
+  host_number="${address##*.}"
+  start_number="${DHCP_RANGE_START##*.}"
+  end_number="${DHCP_RANGE_END##*.}"
+  [ "$host_number" -ge "$start_number" ] && [ "$host_number" -le "$end_number" ]
+}
+
+client_dhcp_address() {
+  local addresses address count=0 selected="" total=0
+  addresses="$(ip -n "$CLIENT_NAMESPACE" -o -4 address show dev "$CLIENT_INTERFACE" scope global | awk '{print $4}')"
+  for address in $addresses; do
+    total=$((total + 1))
+    [ "${address#*/}" = "24" ] || continue
+    address="${address%/*}"
+    if address_in_dhcp_pool "$address"; then
+      count=$((count + 1))
+      selected="$address"
+    fi
+  done
+  [ "$total" -eq 1 ] && [ "$count" -eq 1 ] || return 1
+  printf '%s' "$selected"
+}
+
+remove_client_dhcp_addresses() {
+  local addresses address
+  addresses="$(ip -n "$CLIENT_NAMESPACE" -o -4 address show dev "$CLIENT_INTERFACE" scope global | awk '{print $4}')"
+  for address in $addresses; do
+    if [ "${address#*/}" = "24" ] && address_in_dhcp_pool "${address%/*}"; then
+      ip -n "$CLIENT_NAMESPACE" address del "$address" dev "$CLIENT_INTERFACE"
+    fi
+  done
+}
+
+snapshot_r6_host_state() {
+  R6_HOST_DEFAULT_ROUTE="$(capture_default_route)"
+  require_default_route_is_not_lab_interface "$R6_HOST_DEFAULT_ROUTE"
+  R6_HOST_FORWARDING="$(capture_host_ipv4_forwarding)"
+  R6_HOST_NFTABLES="$(capture_host_nftables)"
+  R6_HOST_DNS="$(capture_host_dns_config)"
+  R6_HOST_DNSMASQ_SERVICE="$(capture_host_dnsmasq_service_state)"
+  R6_HOST_INTERFACES="$(capture_host_interface_state)"
+}
+
+verify_r6_host_state() {
+  verify_default_route_unchanged "$R6_HOST_DEFAULT_ROUTE" || return 1
+  verify_host_ipv4_forwarding_unchanged "$R6_HOST_FORWARDING" || return 1
+  verify_host_nftables_unchanged "$R6_HOST_NFTABLES" || return 1
+  verify_snapshot_unchanged "Ubuntu VM host DNS configuration" "$R6_HOST_DNS" "$(capture_host_dns_config)" || return 1
+  verify_snapshot_unchanged "Ubuntu VM host dnsmasq service state" "$R6_HOST_DNSMASQ_SERVICE" "$(capture_host_dnsmasq_service_state)" || return 1
+  verify_snapshot_unchanged "Ubuntu VM host interface configuration" "$R6_HOST_INTERFACES" "$(capture_host_interface_state)"
+}
+
+render_dnsmasq_config() {
+  {
+    printf '# Generated from %s and %s\n' "$DNSMASQ_CONFIG_TEMPLATE" "$HVR_CONFIG"
+    printf 'port=0\n'
+    printf 'interface=%s\n' "$ROUTER_LAN_INTERFACE"
+    printf 'bind-interfaces\n'
+    printf 'dhcp-authoritative\n'
+    printf 'dhcp-range=%s,%s,255.255.255.0,%s\n' "$DHCP_RANGE_START" "$DHCP_RANGE_END" "$DHCP_LEASE_TIME"
+    printf 'dhcp-option=option:router,%s\n' "$ROUTER_LAN"
+    printf 'dhcp-option=option:netmask,255.255.255.0\n'
+    printf 'dhcp-option=option:dns-server,%s\n' "$DHCP_DNS_SERVER"
+    printf 'dhcp-leasefile=%s\n' "$DNSMASQ_LEASE_FILE"
+    printf 'pid-file=%s\n' "$DNSMASQ_PID_FILE"
+    printf 'log-facility=%s\n' "$DNSMASQ_LOG_FILE"
+    printf 'log-dhcp\n'
+  } > "$DNSMASQ_CONFIG"
 }
