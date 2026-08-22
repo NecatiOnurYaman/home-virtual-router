@@ -1,0 +1,8 @@
+AGENTS.md
+PROJECT_SPEC.md
+.env
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+*.log
