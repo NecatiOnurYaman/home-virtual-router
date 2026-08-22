@@ -19,6 +19,9 @@ ROUTING_DISABLE = ROOT / "lab/scripts/disable-routing.sh"
 NAT_ENABLE = ROOT / "lab/scripts/enable-nat.sh"
 NAT_DISABLE = ROOT / "lab/scripts/disable-nat.sh"
 NAT_TEST = ROOT / "lab/scripts/test-nat.sh"
+FIREWALL_ENABLE = ROOT / "lab/scripts/enable-firewall.sh"
+FIREWALL_DISABLE = ROOT / "lab/scripts/disable-firewall.sh"
+FIREWALL_TEST = ROOT / "lab/scripts/test-firewall.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
@@ -40,6 +43,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(values["CLIENT_ADDRESS"], "10.0.0.10")
         self.assertEqual(values["NAT_TABLE"], "hvr-nat")
         self.assertEqual(values["NAT_CHAIN"], "hvr-postrouting")
+        self.assertEqual(values["FILTER_TABLE"], "hvr-filter")
+        self.assertEqual(values["FILTER_CHAIN"], "hvr-forward")
 
     def test_rejects_executable_config(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -274,7 +279,11 @@ class NatStageTests(unittest.TestCase):
         self.assertNotIn("route flush", self.enable + self.disable)
 
     def test_no_dnat_port_forwarding_or_filter_policy(self) -> None:
-        scripts = (self.enable + self.disable + self.common).lower()
+        nat_helpers = self.common[
+            self.common.index("create_project_nat_table()"):
+            self.common.index("filter_table_exists()")
+        ]
+        scripts = (self.enable + self.disable + nat_helpers).lower()
         self.assertNotIn(" dnat", scripts)
         self.assertNotIn(" redirect", scripts)
         self.assertNotIn(" hook input", scripts)
@@ -292,6 +301,75 @@ class NatStageTests(unittest.TestCase):
     def test_source_translation_is_observed_not_inferred(self) -> None:
         self.assertIn('observed_source="$(tail -n 1 "$capture_file")"', self.integration_test)
         self.assertIn('[ "$observed_source" = "$ROUTER_WAN" ]', self.integration_test)
+
+
+class FirewallStageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enable = FIREWALL_ENABLE.read_text(encoding="utf-8")
+        self.disable = FIREWALL_DISABLE.read_text(encoding="utf-8")
+        self.common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        self.integration_test = FIREWALL_TEST.read_text(encoding="utf-8")
+
+    def test_filter_objects_are_allowlisted_and_separate_from_nat(self) -> None:
+        self.assertIn('require_explicit_nft_table "$FILTER_TABLE"', self.common)
+        self.assertIn('require_explicit_nft_chain "$FILTER_CHAIN"', self.common)
+        self.assertIn('router_nft add table inet "$FILTER_TABLE"', self.common)
+        self.assertIn('router_nft add table ip "$NAT_TABLE"', self.common)
+
+    def test_forward_chain_has_default_drop_policy(self) -> None:
+        self.assertIn("type filter hook forward priority filter; policy drop;", self.common)
+
+    def test_rules_are_ordered_and_stateful(self) -> None:
+        invalid = self.common.index('ct state invalid counter drop')
+        established = self.common.index('ct state established,related counter accept')
+        outbound = self.common.index('ct state new iifname "$ROUTER_LAN_INTERFACE"')
+        wan_drop = self.common.index('ct state new iifname "$ROUTER_WAN_INTERFACE"')
+        self.assertLess(invalid, established)
+        self.assertLess(established, outbound)
+        self.assertLess(outbound, wan_drop)
+        self.assertIn('oifname "$ROUTER_WAN_INTERFACE"', self.common[outbound:])
+        self.assertIn('ip saddr "$LAN_SUBNET" counter accept', self.common[outbound:])
+
+    def test_no_wan_to_lan_accept_or_port_forwarding(self) -> None:
+        for line in self.common.splitlines():
+            if 'iifname "$ROUTER_WAN_INTERFACE"' in line:
+                self.assertNotIn("accept", line)
+        lowered = self.enable.lower() + self.disable.lower() + self.common.lower()
+        self.assertNotIn(" dnat", lowered)
+        self.assertNotIn(" redirect", lowered)
+
+    def test_firewall_mutations_are_namespace_scoped_and_exact(self) -> None:
+        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" nft "$@"', self.common)
+        self.assertIn('router_nft delete table inet "$FILTER_TABLE"', self.common)
+        self.assertNotIn("nft flush", self.enable + self.disable + self.common)
+        self.assertNotIn('delete table ip "$NAT_TABLE"', self.disable)
+
+    def test_enable_and_disable_verify_host_nftables(self) -> None:
+        for script in (self.enable, self.disable):
+            self.assertIn('host_nftables_before="$(capture_host_nftables)"', script)
+            self.assertIn('verify_host_nftables_unchanged "$host_nftables_before"', script)
+            self.assertNotIn("\nnft add", script)
+            self.assertNotIn("\nnft delete", script)
+
+    def test_unsolicited_test_route_is_exact_and_removed(self) -> None:
+        exact_add = (
+            'ip -n "$UPSTREAM_NAMESPACE" route add "$LAN_SUBNET" '
+            'via "$ROUTER_WAN" dev "$UPSTREAM_INTERFACE"'
+        )
+        exact_delete = (
+            'ip -n "$UPSTREAM_NAMESPACE" route del "$LAN_SUBNET" '
+            'via "$ROUTER_WAN" dev "$UPSTREAM_INTERFACE"'
+        )
+        self.assertEqual(self.integration_test.count(exact_add), 1)
+        self.assertGreaterEqual(self.integration_test.count(exact_delete), 2)
+        self.assertIn(
+            "drop_packets_before=\"$(filter_rule_packet_count hvr-r5-wan-lan-drop)\"",
+            self.integration_test,
+        )
+        self.assertIn(
+            "drop_packets_after=\"$(filter_rule_packet_count hvr-r5-wan-lan-drop)\"",
+            self.integration_test,
+        )
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ ROUTER_LAN_INTERFACE=""
 CLIENT_INTERFACE=""
 NAT_TABLE=""
 NAT_CHAIN=""
+FILTER_TABLE=""
+FILTER_CHAIN=""
 
 load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
@@ -43,6 +45,8 @@ load_topology_config() {
       CLIENT_INTERFACE) CLIENT_INTERFACE="$value" ;;
       NAT_TABLE) NAT_TABLE="$value" ;;
       NAT_CHAIN) NAT_CHAIN="$value" ;;
+      FILTER_TABLE) FILTER_TABLE="$value" ;;
+      FILTER_CHAIN) FILTER_CHAIN="$value" ;;
     esac
   done < "$HVR_CONFIG"
 }
@@ -104,6 +108,8 @@ validate_topology_names() {
   done
   require_explicit_nft_table "$NAT_TABLE" || return 1
   require_explicit_nft_chain "$NAT_CHAIN" || return 1
+  require_explicit_nft_table "$FILTER_TABLE" || return 1
+  require_explicit_nft_chain "$FILTER_CHAIN" || return 1
 }
 
 is_known_namespace() {
@@ -197,4 +203,64 @@ nat_rule_exists() {
   printf '%s\n' "$rules" | grep -F -- "ip saddr $LAN_SUBNET" >/dev/null || return 1
   printf '%s\n' "$rules" | grep -F -- "masquerade" >/dev/null || return 1
   printf '%s\n' "$rules" | grep -F -- "comment \"hvr-r4-masquerade\"" >/dev/null
+}
+
+filter_table_exists() {
+  router_nft list table inet "$FILTER_TABLE" >/dev/null 2>&1
+}
+
+create_project_filter_table() {
+  router_nft add table inet "$FILTER_TABLE"
+  router_nft add chain inet "$FILTER_TABLE" "$FILTER_CHAIN" \
+    '{ type filter hook forward priority filter; policy drop; }'
+  router_nft add rule inet "$FILTER_TABLE" "$FILTER_CHAIN" \
+    ct state invalid counter drop comment "hvr-r5-invalid-drop"
+  router_nft add rule inet "$FILTER_TABLE" "$FILTER_CHAIN" \
+    ct state established,related counter accept comment "hvr-r5-established-accept"
+  router_nft add rule inet "$FILTER_TABLE" "$FILTER_CHAIN" \
+    ct state new iifname "$ROUTER_LAN_INTERFACE" oifname "$ROUTER_WAN_INTERFACE" \
+    ip saddr "$LAN_SUBNET" counter accept comment "hvr-r5-lan-wan-accept"
+  router_nft add rule inet "$FILTER_TABLE" "$FILTER_CHAIN" \
+    ct state new iifname "$ROUTER_WAN_INTERFACE" oifname "$ROUTER_LAN_INTERFACE" \
+    counter drop comment "hvr-r5-wan-lan-drop"
+}
+
+delete_project_filter_table() {
+  router_nft delete table inet "$FILTER_TABLE"
+}
+
+filter_rules_exist() {
+  local rules
+  rules="$(router_nft list chain inet "$FILTER_TABLE" "$FILTER_CHAIN" 2>/dev/null)" || return 1
+  printf '%s\n' "$rules" | grep -F -- "type filter hook forward priority filter; policy drop;" >/dev/null || return 1
+  printf '%s\n' "$rules" | grep -F -- "ct state invalid" | grep -F -- "drop" | grep -F -- "hvr-r5-invalid-drop" >/dev/null || return 1
+  printf '%s\n' "$rules" | grep -F -- "ct state established,related" | grep -F -- "accept" | grep -F -- "hvr-r5-established-accept" >/dev/null || return 1
+  printf '%s\n' "$rules" | grep -F -- "ct state new" | grep -F -- "iifname \"$ROUTER_LAN_INTERFACE\"" | grep -F -- "oifname \"$ROUTER_WAN_INTERFACE\"" | grep -F -- "ip saddr $LAN_SUBNET" | grep -F -- "accept" | grep -F -- "hvr-r5-lan-wan-accept" >/dev/null || return 1
+  printf '%s\n' "$rules" | grep -F -- "ct state new" | grep -F -- "iifname \"$ROUTER_WAN_INTERFACE\"" | grep -F -- "oifname \"$ROUTER_LAN_INTERFACE\"" | grep -F -- "drop" | grep -F -- "hvr-r5-wan-lan-drop" >/dev/null
+}
+
+filter_rule_packet_count() {
+  local comment="$1"
+  router_nft list chain inet "$FILTER_TABLE" "$FILTER_CHAIN" | awk -v marker="$comment" '
+    index($0, "comment \"" marker "\"") {
+      for (i = 1; i <= NF; i++) {
+        if ($i == "packets") {
+          print $(i + 1)
+          found = 1
+          exit
+        }
+      }
+    }
+    END { if (!found) exit 1 }
+  '
+}
+
+require_r4_nat_state() {
+  [ "$(ip netns exec "$ROUTER_NAMESPACE" sysctl -n net.ipv4.ip_forward)" = "1" ] ||
+    die "router-namespace forwarding must be enabled"
+  client_default_route_exists || die "client default route must be present"
+  nat_rule_exists || die "exact R4 masquerade state is required"
+  if ip -n "$UPSTREAM_NAMESPACE" route show "$LAN_SUBNET" | grep -q .; then
+    die "R4 requires no upstream route to $LAN_SUBNET"
+  fi
 }

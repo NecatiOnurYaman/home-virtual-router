@@ -74,3 +74,26 @@ if namespace_exists "$ROUTER_NAMESPACE" && command -v nft >/dev/null 2>&1; then
 else
   printf '  R4 NAT: unavailable (router namespace or nft missing)\n'
 fi
+
+printf '\n[R5 firewall state]\n'
+if namespace_exists "$ROUTER_NAMESPACE" && command -v nft >/dev/null 2>&1; then
+  if filter_table_exists; then
+    printf '  table inet %s: present\n' "$FILTER_TABLE"
+    printf '  forward policy, rules, and counters:\n'
+    if filter_chain_output="$(router_nft list chain inet "$FILTER_TABLE" "$FILTER_CHAIN" 2>/dev/null)"; then
+      printf '%s\n' "$filter_chain_output" | sed 's/^/    /'
+    else
+      printf '    expected chain %s is absent\n' "$FILTER_CHAIN"
+    fi
+    if filter_rules_exist; then
+      printf '  R5 firewall: enabled\n'
+    else
+      printf '  R5 firewall: incomplete or conflicting\n'
+    fi
+  else
+    printf '  table inet %s: absent\n' "$FILTER_TABLE"
+    printf '  R5 firewall: disabled\n'
+  fi
+else
+  printf '  R5 firewall: unavailable (router namespace or nft missing)\n'
+fi

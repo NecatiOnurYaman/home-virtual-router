@@ -30,6 +30,19 @@ Before NAT, upstream sees source `10.0.0.10` and needs `10.0.0.0/24 via 192.0.2.
 
 This resembles the future double-NAT deployment: `10.0.0.x` → Virtual Router NAT → Superbox LAN address → Superbox NAT → Internet. R4 itself provides no Internet access. NAT is not a firewall, and R4 creates no filter chain, filtering policy, DNAT, port forwarding, DHCP, DNS, or IPFIX configuration.
 
+R5 keeps address translation and traffic policy separate. NAT rewrites addresses; the firewall decides whether a packet may be forwarded. The project-owned `inet hvr-filter` forward chain has policy `drop` and these ordered rules:
+
+```text
+ct state invalid                         drop
+ct state established,related             accept
+ct state new hvr-lan -> hvr-wan
+  source 10.0.0.0/24                     accept
+ct state new hvr-wan -> hvr-lan          drop (counted)
+everything else                          drop (chain policy)
+```
+
+Invalid packets are rejected because they cannot be associated safely with a valid connection. A LAN client may start a connection, and its reply is accepted through kernel connection tracking as established traffic. A new unsolicited WAN-originated forwarded flow hits an explicit counted drop rule, while any other unmatched traffic falls through to the default-drop policy. R5 adds no INPUT or OUTPUT chains, so router-local management hardening remains outside this stage.
+
 ## Safety boundary
 
 Project scripts do not launch or control UTM and must never alter macOS networking. Future networking commands belong inside the Ubuntu VM and must use the shared guards in `router/scripts/safety.sh`, explicit `hvr-` namespace and interface names, and targeted cleanup.
@@ -61,6 +74,10 @@ The repository does not create this marker and cannot create it on macOS. Removi
 - `make nat-status` reports the project NAT table, rule, and counters.
 - `make nat-test` proves upstream observes UDP source `192.0.2.2` and tests expected pings.
 - `make nat-disable` deletes only `ip hvr-nat` and restores the exact R3 return route.
+- `make firewall-enable` creates only `inet hvr-filter` inside `hvr-router`.
+- `make firewall-status` displays forward policy, rules, and counters.
+- `make firewall-test` verifies client-initiated ping/TCP and blocked unsolicited WAN TCP.
+- `make firewall-disable` deletes only `inet hvr-filter`, leaving R4 NAT intact.
 - `make lab-destroy` explicitly removes only the configured namespaces and exact-name partial veth endpoints.
 
 The create, status, test, and destroy targets visibly use `sudo` because namespace administration requires root. Creation fails if the topology already exists. Teardown tolerates missing pieces and never performs wildcard or host-wide cleanup.
@@ -71,5 +88,12 @@ Expected R4 results:
 - A UDP observer in `hvr-upstream` reports the translated peer as `192.0.2.2`.
 - Unsolicited upstream-to-client connectivity is not required and no upstream route exists for it.
 - Disabling NAT restores routed-without-NAT R3 behavior and its explicit return route.
+
+Expected R5 results:
+
+- Client-initiated ping and TCP traffic succeeds, including established replies.
+- A temporary isolated upstream route makes the client reachable for a controlled test, but a new WAN-to-LAN TCP connection is dropped by the firewall.
+- The temporary route is always removed after the test.
+- Disabling the firewall leaves R4 masquerading operational.
 
 VM lifecycle and configuration remain explicit UTM administration tasks outside this repository. Disable routing before inspecting the R2 baseline, then use `make lab-destroy` and confirm `make lab-info` reports all three namespaces absent.

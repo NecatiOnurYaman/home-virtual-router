@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -57,3 +57,19 @@ nat-test:
 nat-disable:
 	@echo "Removing only the project R4 NAT table and restoring R3 requires root."
 	sudo lab/scripts/disable-nat.sh
+
+firewall-enable:
+	@echo "Enabling the R5 stateful forwarding firewall inside hvr-router requires root."
+	sudo lab/scripts/enable-firewall.sh
+
+firewall-status:
+	@echo "Inspecting the R5 namespace firewall and counters requires root."
+	sudo lab/scripts/topology-status.sh
+
+firewall-test:
+	@echo "Testing R5 stateful forwarding policy inside the isolated namespaces requires root."
+	sudo lab/scripts/test-firewall.sh
+
+firewall-disable:
+	@echo "Deleting only the project R5 filter table requires root."
+	sudo lab/scripts/disable-firewall.sh
