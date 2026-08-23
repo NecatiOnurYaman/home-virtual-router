@@ -1,4 +1,5 @@
 daemonize: false
+pidfile: @PID_FILE@
 logfile: @LOG_FILE@
 promisc: false
 pcap_interface: @CAPTURE_INTERFACE@

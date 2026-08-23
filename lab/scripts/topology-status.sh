@@ -160,6 +160,7 @@ printf '  protocol: IPFIX v10\n'
 printf '  runtime directory: %s\n' "$IPFIX_RUNTIME_DIR"
 printf '  configuration: %s\n' "$IPFIX_CONFIG_FILE"
 printf '  exporter log: %s\n' "$IPFIX_LOG_FILE"
+printf '  process diagnostics: %s\n' "$IPFIX_PROCESS_TREE_FILE"
 if [ -s "$IPFIX_COLLECTOR_RESULT" ]; then
   validated_datagrams="$(sed -n 's/^[[:space:]]*"datagrams": \([0-9][0-9]*\),*$/\1/p' "$IPFIX_COLLECTOR_RESULT" | head -n 1)"
   observed_domain="$(sed -n '/"observation_domains": \[/ { n; s/^[[:space:]]*\([0-9][0-9]*\),*$/\1/p; }' "$IPFIX_COLLECTOR_RESULT" | head -n 1)"

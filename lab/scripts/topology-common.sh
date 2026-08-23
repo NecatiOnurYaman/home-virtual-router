@@ -35,6 +35,12 @@ readonly IPFIX_LOG_FILE="$IPFIX_RUNTIME_DIR/pmacctd.log"
 readonly IPFIX_CONFIG_FILE="$IPFIX_RUNTIME_DIR/pmacctd.conf"
 readonly IPFIX_CONFIG_TEMPLATE="$HVR_REPO_DIR/router/config/pmacctd-nfprobe.conf.template"
 readonly IPFIX_COMMAND_FILE="$IPFIX_RUNTIME_DIR/command.txt"
+readonly IPFIX_PROCESS_TREE_FILE="$IPFIX_RUNTIME_DIR/process-tree.txt"
+readonly IPFIX_CORE_STARTTIME_FILE="$IPFIX_RUNTIME_DIR/pmacctd.starttime"
+readonly IPFIX_LAUNCH_PID_FILE="$IPFIX_RUNTIME_DIR/launch.pid"
+readonly IPFIX_LAUNCH_STARTTIME_FILE="$IPFIX_RUNTIME_DIR/launch.starttime"
+readonly IPFIX_PLUGIN_PID_FILE="$IPFIX_RUNTIME_DIR/nfprobe.pid"
+readonly IPFIX_PLUGIN_STARTTIME_FILE="$IPFIX_RUNTIME_DIR/nfprobe.starttime"
 readonly IPFIX_COLLECTOR_RESULT="$IPFIX_RUNTIME_DIR/collector-result.json"
 readonly IPFIX_COLLECTOR_READY="$IPFIX_RUNTIME_DIR/collector.ready"
 readonly IPFIX_TRAFFIC_START="$IPFIX_RUNTIME_DIR/traffic-start"
@@ -618,36 +624,156 @@ validate_router_dns_listeners() {
   '
 }
 
-pmacctd_running() {
+process_starttime() {
+  local pid="$1"
+  [ -r "/proc/$pid/stat" ] || return 1
+  awk '{print $22}' "/proc/$pid/stat"
+}
+
+process_is_running() {
+  local pid="$1" state
+  kill -0 "$pid" 2>/dev/null || return 1
+  state="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" || return 1
+  [ "$state" != "Z" ]
+}
+
+process_is_pmacctd() {
+  local pid="$1" executable
+  [ -e "/proc/$pid/exe" ] || return 1
+  executable="$(readlink "/proc/$pid/exe")" || return 1
+  [ "${executable##*/}" = "pmacctd" ]
+}
+
+process_is_in_router_namespace() {
+  local pid="$1" process_netns router_netns
+  process_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null)" || return 1
+  router_netns="$(ip netns exec "$ROUTER_NAMESPACE" readlink /proc/self/ns/net 2>/dev/null)" || return 1
+  [ "$process_netns" = "$router_netns" ]
+}
+
+pmacct_core_running() {
   local pid
   pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
-  project_process_matches "$pid" pmacctd "$IPFIX_CONFIG_FILE"
+  process_is_running "$pid" || return 1
+  process_is_pmacctd "$pid" || return 1
+  process_is_in_router_namespace "$pid"
+}
+
+project_nfprobe_pids() {
+  local core_pid="$1" child parent
+  [ -r "/proc/$core_pid/task/$core_pid/children" ] || return 1
+  for child in $(cat "/proc/$core_pid/task/$core_pid/children"); do
+    parent="$(awk '/^PPid:/ {print $2}' "/proc/$child/status" 2>/dev/null)" || continue
+    [ "$parent" = "$core_pid" ] || continue
+    process_is_pmacctd "$child" || continue
+    process_is_in_router_namespace "$child" || continue
+    printf '%s\n' "$child"
+  done
+}
+
+pmacct_nfprobe_running() {
+  local core_pid plugin_pid
+  core_pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
+  plugin_pid="$(project_nfprobe_pids "$core_pid" | head -n 1)"
+  [ -n "$plugin_pid" ] || return 1
+  printf '%s\n' "$plugin_pid" > "$IPFIX_PLUGIN_PID_FILE"
+  process_starttime "$plugin_pid" > "$IPFIX_PLUGIN_STARTTIME_FILE"
+}
+
+pmacctd_running() {
+  pmacct_core_running && pmacct_nfprobe_running
+}
+
+capture_pmacct_process_tree() {
+  local pid pids="" netns
+  for pid_file in "$IPFIX_LAUNCH_PID_FILE" "$IPFIX_PID_FILE" "$IPFIX_PLUGIN_PID_FILE"; do
+    if pid="$(read_project_pid "$pid_file" 2>/dev/null)"; then pids="$pids $pid"; fi
+  done
+  if pid="$(read_project_pid "$IPFIX_PID_FILE" 2>/dev/null)"; then
+    pids="$pids $(project_nfprobe_pids "$pid" 2>/dev/null || true)"
+  fi
+  {
+    printf '%s\n' '--- pmacct process snapshot ---'
+    printf 'PID PPID PGID SID COMM ARGS NETNS\n'
+    for pid in $(printf '%s\n' $pids | awk '!seen[$0]++'); do
+      [ -r "/proc/$pid/status" ] || continue
+      netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null || printf unknown)"
+      ps -o pid=,ppid=,pgid=,sid=,comm=,args= -p "$pid" 2>/dev/null |
+        sed "s|$| $netns|"
+    done
+    printf '\nhvr-router namespace: %s\n' \
+      "$(ip netns exec "$ROUTER_NAMESPACE" readlink /proc/self/ns/net 2>/dev/null || printf unavailable)"
+    printf 'pmacct PIDs reported by ip netns pids:\n'
+    for pid in $(ip netns pids "$ROUTER_NAMESPACE" 2>/dev/null || true); do
+      process_is_pmacctd "$pid" || continue
+      ps -o pid=,ppid=,pgid=,sid=,comm=,args= -p "$pid" 2>/dev/null || true
+    done
+  } >> "$IPFIX_PROCESS_TREE_FILE"
 }
 
 render_pmacctd_config() {
-  sed -e "s|@LOG_FILE@|$IPFIX_LOG_FILE|g" \
+  sed -e "s|@PID_FILE@|$IPFIX_PID_FILE|g" \
+    -e "s|@LOG_FILE@|$IPFIX_LOG_FILE|g" \
     -e "s|@CAPTURE_INTERFACE@|$IPFIX_CAPTURE_INTERFACE|g" \
     -e "s|@COLLECTOR_HOST@|$IPFIX_COLLECTOR_HOST|g" \
     -e "s|@COLLECTOR_PORT@|$IPFIX_COLLECTOR_PORT|g" \
     "$IPFIX_CONFIG_TEMPLATE" > "$IPFIX_CONFIG_FILE"
 }
 
+stop_recorded_pmacct_process() {
+  local pid_file="$1" starttime_file="$2" label="$3" pid recorded_starttime current_starttime attempt
+  pid="$(read_project_pid "$pid_file")" || return 0
+  if ! process_is_running "$pid"; then rm -f -- "$pid_file" "$starttime_file"; return 0; fi
+  [ -r "$starttime_file" ] || die "refusing to stop $label without its recorded process start time"
+  recorded_starttime="$(cat "$starttime_file")"
+  current_starttime="$(process_starttime "$pid")" || die "cannot verify $label process start time"
+  [ "$recorded_starttime" = "$current_starttime" ] || die "refusing to stop reused PID $pid for $label"
+  process_is_pmacctd "$pid" || die "refusing to stop $label PID that is not pmacctd"
+  process_is_in_router_namespace "$pid" || die "refusing to stop $label outside hvr-router"
+  kill "$pid"
+  attempt=0
+  while process_is_running "$pid" && [ "$attempt" -lt 50 ]; do
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  process_is_running "$pid" && die "$label process $pid did not stop"
+  rm -f -- "$pid_file" "$starttime_file"
+}
+
 stop_project_pmacctd_if_present() {
-  local pid
-  [ -e "$IPFIX_PID_FILE" ] || return 0
-  pid="$(read_project_pid "$IPFIX_PID_FILE")" || {
-    rm -f -- "$IPFIX_PID_FILE"
-    return 0
-  }
-  if ! kill -0 "$pid" 2>/dev/null; then
-    rm -f -- "$IPFIX_PID_FILE"
-    return 0
+  local core_pid plugin_pid plugin_starttime attempt
+  if core_pid="$(read_project_pid "$IPFIX_PID_FILE" 2>/dev/null)" && process_is_running "$core_pid"; then
+    [ -r "$IPFIX_CORE_STARTTIME_FILE" ] || die "refusing to stop pmacct core without its recorded process start time"
+    [ "$(cat "$IPFIX_CORE_STARTTIME_FILE")" = "$(process_starttime "$core_pid")" ] ||
+      die "refusing to stop reused pmacct core PID $core_pid"
+    process_is_pmacctd "$core_pid" || die "project pmacct pidfile does not identify pmacctd"
+    process_is_in_router_namespace "$core_pid" || die "project pmacct core is outside hvr-router"
+    plugin_pid="$(project_nfprobe_pids "$core_pid" | head -n 1)"
+    if [ -n "$plugin_pid" ]; then
+      plugin_starttime="$(process_starttime "$plugin_pid")"
+      printf '%s\n' "$plugin_pid" > "$IPFIX_PLUGIN_PID_FILE"
+      printf '%s\n' "$plugin_starttime" > "$IPFIX_PLUGIN_STARTTIME_FILE"
+    fi
+    kill "$core_pid"
+    attempt=0
+    while process_is_running "$core_pid" && [ "$attempt" -lt 50 ]; do
+      sleep 0.1
+      attempt=$((attempt + 1))
+    done
+    process_is_running "$core_pid" && die "project pmacct core $core_pid did not stop"
   fi
-  if pmacctd_running; then
-    stop_project_process "$IPFIX_PID_FILE" pmacctd "$IPFIX_CONFIG_FILE"
-    return 0
-  fi
-  die "refusing to stop a PID that is not the exact project pmacctd instance"
+  stop_recorded_pmacct_process "$IPFIX_PLUGIN_PID_FILE" "$IPFIX_PLUGIN_STARTTIME_FILE" "project nfprobe plugin"
+  # During very early failure the launch PID may be the only identity available.
+  stop_recorded_pmacct_process "$IPFIX_LAUNCH_PID_FILE" "$IPFIX_LAUNCH_STARTTIME_FILE" "project pmacct launch process"
+  rm -f -- "$IPFIX_PID_FILE" "$IPFIX_CORE_STARTTIME_FILE" \
+    "$IPFIX_PLUGIN_PID_FILE" "$IPFIX_PLUGIN_STARTTIME_FILE" \
+    "$IPFIX_LAUNCH_PID_FILE" "$IPFIX_LAUNCH_STARTTIME_FILE"
+}
+
+remove_project_ipfix_pid_files() {
+  rm -f -- "$IPFIX_PID_FILE" "$IPFIX_CORE_STARTTIME_FILE" \
+    "$IPFIX_PLUGIN_PID_FILE" "$IPFIX_PLUGIN_STARTTIME_FILE" \
+    "$IPFIX_LAUNCH_PID_FILE" "$IPFIX_LAUNCH_STARTTIME_FILE"
 }
 
 stop_legacy_project_softflowd_if_present() {
@@ -664,7 +790,9 @@ stop_legacy_project_softflowd_if_present() {
 
 remove_project_ipfix_files() {
   rm -f -- "$IPFIX_PID_FILE" "$IPFIX_LOG_FILE" "$IPFIX_CONFIG_FILE" \
-    "$IPFIX_COMMAND_FILE" \
+    "$IPFIX_COMMAND_FILE" "$IPFIX_PROCESS_TREE_FILE" \
+    "$IPFIX_CORE_STARTTIME_FILE" "$IPFIX_LAUNCH_PID_FILE" "$IPFIX_LAUNCH_STARTTIME_FILE" \
+    "$IPFIX_PLUGIN_PID_FILE" "$IPFIX_PLUGIN_STARTTIME_FILE" \
     "$LEGACY_IPFIX_PID_FILE" "$LEGACY_IPFIX_CONTROL_SOCKET" \
     "$IPFIX_RUNTIME_DIR/softflowd.log" "$IPFIX_RUNTIME_DIR/statistics.txt" \
     "$IPFIX_RUNTIME_DIR/dump-flows.txt" "$IPFIX_RUNTIME_DIR/expire-all.txt" \

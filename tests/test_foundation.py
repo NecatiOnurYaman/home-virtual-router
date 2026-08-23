@@ -784,13 +784,14 @@ class R8IpfixTests(unittest.TestCase):
         self.config = PMACCT_CONFIG.read_text(encoding="utf-8")
 
     def test_exporter_is_namespace_scoped_ipfix_v10_on_lan(self) -> None:
-        self.assertIn('pmacctd_command=(pmacctd -f "$IPFIX_CONFIG_FILE")', self.enable)
-        self.assertIn('ip netns exec "$ROUTER_NAMESPACE" "${pmacctd_command[@]}"', self.enable)
+        self.assertIn('pmacctd_command=(ip netns exec "$ROUTER_NAMESPACE" pmacctd -f "$IPFIX_CONFIG_FILE")', self.enable)
+        self.assertIn('"${pmacctd_command[@]}" >> "$IPFIX_LOG_FILE" 2>&1 &', self.enable)
         self.assertIn('IPFIX_CAPTURE_INTERFACE=hvr-lan', (ROOT / "lab/config/defaults.env").read_text())
         self.assertIn("pcap_interface: @CAPTURE_INTERFACE@", self.config)
         self.assertIn("pcap_filter: ip", self.config)
         self.assertIn("plugins: nfprobe[hvr]", self.config)
         self.assertIn("nfprobe_version[hvr]: 10", self.config)
+        self.assertIn("pidfile: @PID_FILE@", self.config)
         self.assertIn("nfprobe_receiver[hvr]: @COLLECTOR_HOST@:@COLLECTOR_PORT@", self.config)
         self.assertNotIn("nfprobe_engine", self.config)
         self.assertNotIn("log_stderr_tstamp", self.config)
@@ -824,10 +825,37 @@ class R8IpfixTests(unittest.TestCase):
 
     def test_actual_binary_capability_is_checked_by_startup(self) -> None:
         self.assertIn("pmacctd -V", CHECKER.read_text(encoding="utf-8"))
-        self.assertIn("pmacctd/nfprobe exited during its startup health check", self.enable)
         self.assertIn("no more plugins active", self.enable)
         self.assertIn("engine_type:engine_id is only supported on NetFlow v5", self.enable)
         self.assertIn("hvr/nfprobe", self.enable)
+        self.assertIn("pmacct_core_running", self.enable)
+        self.assertIn("pmacct_nfprobe_running", self.enable)
+        self.assertIn('Exporting flows to [$IPFIX_COLLECTOR_HOST]:$IPFIX_COLLECTOR_PORT', self.enable)
+
+    def test_process_model_uses_pidfile_parentage_and_namespace(self) -> None:
+        self.assertIn('readonly IPFIX_PROCESS_TREE_FILE="$IPFIX_RUNTIME_DIR/process-tree.txt"', self.common)
+        self.assertIn('readlink "/proc/$pid/ns/net"', self.common)
+        self.assertIn('readlink /proc/self/ns/net', self.common)
+        self.assertIn('/proc/$core_pid/task/$core_pid/children', self.common)
+        self.assertIn('[ "$parent" = "$core_pid" ]', self.common)
+        self.assertIn("process_is_pmacctd", self.common)
+        self.assertIn("process_starttime", self.common)
+
+    def test_failed_start_preserves_diagnostics(self) -> None:
+        rollback = self.enable[self.enable.index("rollback_ipfix_enable()"):
+                               self.enable.index("trap rollback_ipfix_enable")]
+        self.assertIn("capture_pmacct_process_tree", rollback)
+        self.assertIn("remove_project_ipfix_pid_files", rollback)
+        self.assertNotIn("remove_project_ipfix_files", rollback)
+        for artifact in ("IPFIX_CONFIG_FILE", "IPFIX_LOG_FILE", "IPFIX_COMMAND_FILE", "IPFIX_PROCESS_TREE_FILE"):
+            self.assertIn(artifact, rollback)
+
+    def test_safe_shutdown_signals_verified_core_then_plugin(self) -> None:
+        self.assertIn('kill "$core_pid"', self.common)
+        self.assertIn('stop_recorded_pmacct_process "$IPFIX_PLUGIN_PID_FILE"', self.common)
+        self.assertIn("refusing to stop reused pmacct core PID", self.common)
+        self.assertIn("project pmacct core is outside hvr-router", self.common)
+        self.assertIn("run ipfix-disable before enabling", self.enable)
 
     def test_host_network_and_services_are_not_modified(self) -> None:
         combined = self.enable + self.disable + self.integration_test
@@ -843,8 +871,9 @@ class R8IpfixTests(unittest.TestCase):
 
     def test_cleanup_is_project_scoped_and_preserves_r7(self) -> None:
         self.assertIn("stop_project_pmacctd_if_present", self.disable)
-        self.assertIn("if pmacctd_running; then", self.common)
-        self.assertIn("refusing to stop a PID that is not the exact project pmacctd instance", self.common)
+        self.assertIn("pmacct_core_running()", self.common)
+        self.assertIn("pmacct_nfprobe_running()", self.common)
+        self.assertIn("project pmacct pidfile does not identify pmacctd", self.common)
         self.assertIn("remove_project_ipfix_files", self.disable)
         self.assertIn("dns_r7_enabled", self.disable)
         self.assertNotIn("pkill", self.enable + self.disable)

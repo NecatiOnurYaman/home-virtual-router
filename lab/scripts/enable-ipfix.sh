@@ -11,7 +11,7 @@ require_lab_environment
 require_root
 load_topology_config
 validate_topology_names
-for required_command in ip nft sysctl pmacctd systemctl; do
+for required_command in ip nft sysctl pmacctd ps readlink systemctl; do
   command -v "$required_command" >/dev/null 2>&1 ||
     die "$required_command is required (Ubuntu: sudo apt install pmacct)"
 done
@@ -20,16 +20,24 @@ require_r2_topology
 dns_r7_enabled || die "R7 DNS must be enabled before R8 IPFIX"
 nat_rule_exists || die "R4 NAT state is required"
 filter_rules_exist || die "R5 firewall state is required"
-pmacctd_running && die "R8 project pmacctd process is already running"
+if existing_pid="$(read_project_pid "$IPFIX_PID_FILE" 2>/dev/null)" && process_is_running "$existing_pid"; then
+  die "an R8 pmacct core PID is already live; run ipfix-disable before enabling"
+fi
+if existing_pid="$(read_project_pid "$IPFIX_PLUGIN_PID_FILE" 2>/dev/null)" && process_is_running "$existing_pid"; then
+  die "an R8 nfprobe plugin PID is already live; run ipfix-disable before enabling"
+fi
 snapshot_r6_host_state
 
 started=0
 rollback_ipfix_enable() {
   local status=$?
   trap - EXIT INT TERM
+  capture_pmacct_process_tree || status=1
   if [ "$started" -eq 1 ]; then stop_project_pmacctd_if_present || status=1; fi
-  remove_project_ipfix_files
+  remove_project_ipfix_pid_files
   verify_r6_host_state || status=1
+  printf 'R8 startup failed; preserved %s, %s, %s, and %s for diagnosis.\n' \
+    "$IPFIX_CONFIG_FILE" "$IPFIX_LOG_FILE" "$IPFIX_COMMAND_FILE" "$IPFIX_PROCESS_TREE_FILE" >&2
   exit "$status"
 }
 trap rollback_ipfix_enable EXIT INT TERM
@@ -47,33 +55,41 @@ render_pmacctd_config
 chown 0:0 "$IPFIX_CONFIG_FILE"
 chmod 0640 "$IPFIX_CONFIG_FILE"
 
-pmacctd_command=(pmacctd -f "$IPFIX_CONFIG_FILE")
+pmacctd_command=(ip netns exec "$ROUTER_NAMESPACE" pmacctd -f "$IPFIX_CONFIG_FILE")
 printf '%q ' "${pmacctd_command[@]}" > "$IPFIX_COMMAND_FILE"
-printf '\n' >> "$IPFIX_COMMAND_FILE"
-ip netns exec "$ROUTER_NAMESPACE" "${pmacctd_command[@]}" >> "$IPFIX_LOG_FILE" 2>&1 &
-exporter_pid=$!
-printf '%s\n' "$exporter_pid" > "$IPFIX_PID_FILE"
+printf '>> %q 2>&1 &\n' "$IPFIX_LOG_FILE" >> "$IPFIX_COMMAND_FILE"
+"${pmacctd_command[@]}" >> "$IPFIX_LOG_FILE" 2>&1 &
+launch_pid=$!
+printf '%s\n' "$launch_pid" > "$IPFIX_LAUNCH_PID_FILE"
+process_starttime "$launch_pid" > "$IPFIX_LAUNCH_STARTTIME_FILE"
 started=1
 
+healthy=0
 for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  if ! pmacctd_running; then
-    sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
-    die "pmacctd/nfprobe exited during its startup health check"
+  capture_pmacct_process_tree || true
+  if pmacct_core_running && [ ! -s "$IPFIX_CORE_STARTTIME_FILE" ]; then
+    core_pid="$(read_project_pid "$IPFIX_PID_FILE")"
+    process_starttime "$core_pid" > "$IPFIX_CORE_STARTTIME_FILE"
   fi
-  if grep -Eiq 'no more plugins active|engine_type:engine_id is only supported on NetFlow v5|unknown plugin|invalid plugin|nfprobe.*(not supported|unavailable)|ERROR.*nfprobe|nfprobe.*ERROR' "$IPFIX_LOG_FILE"; then
+  if grep -Eiq 'no more plugins active|engine_type:engine_id is only supported on NetFlow v5|unknown plugin|invalid plugin|nfprobe.*(not supported|unavailable)|(^|[[:space:]])ERROR([[:space:]]|$)' "$IPFIX_LOG_FILE"; then
     sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
     die "pmacctd nfprobe plugin startup failed; inspect the project log"
   fi
+  if pmacct_core_running && pmacct_nfprobe_running &&
+     grep -F 'hvr/nfprobe' "$IPFIX_LOG_FILE" >/dev/null 2>&1 &&
+     grep -F "Exporting flows to [$IPFIX_COLLECTOR_HOST]:$IPFIX_COLLECTOR_PORT" "$IPFIX_LOG_FILE" >/dev/null 2>&1; then
+    healthy=1
+  fi
   sleep 0.1
 done
-if ! pmacctd_running; then
+if [ "$healthy" -ne 1 ] || ! pmacctd_running; then
+  capture_pmacct_process_tree || true
   sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
-  die "pmacctd could not start nfprobe; verify the installed pmacct build contains nfprobe/IPFIX support"
+  die "pmacct core and hvr/nfprobe plugin did not remain healthy in hvr-router"
 fi
-if ! grep -F 'hvr/nfprobe' "$IPFIX_LOG_FILE" >/dev/null 2>&1; then
-  sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
-  die "pmacctd stayed alive but the hvr/nfprobe plugin was not confirmed active"
-fi
+core_pid="$(read_project_pid "$IPFIX_PID_FILE")"
+process_starttime "$core_pid" > "$IPFIX_CORE_STARTTIME_FILE"
+capture_pmacct_process_tree
 verify_r6_host_state
 
 started=0

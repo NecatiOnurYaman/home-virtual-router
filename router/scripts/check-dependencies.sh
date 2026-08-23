@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-default_commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig pmacctd"
+default_commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig pmacctd ps readlink"
 commands="${HVR_CHECK_COMMANDS:-$default_commands}"
 missing=0
 
@@ -32,6 +32,8 @@ for command_name in $commands; do
       getent) package="libc-bin" ;;
       dig) package="dnsutils" ;;
       pmacctd) package="pmacct" ;;
+      ps) package="procps" ;;
+      readlink) package="coreutils" ;;
       *) package="package providing $command_name" ;;
     esac
     printf '  missing %s (Ubuntu/Debian package: %s)\n' "$command_name" "$package"
