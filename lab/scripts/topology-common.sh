@@ -37,6 +37,7 @@ readonly IPFIX_CONFIG_TEMPLATE="$HVR_REPO_DIR/router/config/pmacctd-nfprobe.conf
 readonly IPFIX_COMMAND_FILE="$IPFIX_RUNTIME_DIR/command.txt"
 readonly IPFIX_COLLECTOR_RESULT="$IPFIX_RUNTIME_DIR/collector-result.json"
 readonly IPFIX_COLLECTOR_READY="$IPFIX_RUNTIME_DIR/collector.ready"
+readonly IPFIX_TRAFFIC_START="$IPFIX_RUNTIME_DIR/traffic-start"
 readonly IPFIX_RECEIVER="$HVR_REPO_DIR/router/scripts/ipfix_test_receiver.py"
 readonly LEGACY_IPFIX_PID_FILE="$IPFIX_RUNTIME_DIR/softflowd.pid"
 readonly LEGACY_IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"
@@ -74,7 +75,6 @@ DNS_TEST_ADDRESS_ALT=""
 IPFIX_ENABLED=""
 IPFIX_COLLECTOR_HOST=""
 IPFIX_COLLECTOR_PORT=""
-IPFIX_OBSERVATION_DOMAIN_ID=""
 IPFIX_CAPTURE_INTERFACE=""
 
 load_topology_config() {
@@ -111,7 +111,6 @@ load_topology_config() {
       IPFIX_ENABLED) IPFIX_ENABLED="$value" ;;
       IPFIX_COLLECTOR_HOST) IPFIX_COLLECTOR_HOST="$value" ;;
       IPFIX_COLLECTOR_PORT) IPFIX_COLLECTOR_PORT="$value" ;;
-      IPFIX_OBSERVATION_DOMAIN_ID) IPFIX_OBSERVATION_DOMAIN_ID="$value" ;;
       IPFIX_CAPTURE_INTERFACE) IPFIX_CAPTURE_INTERFACE="$value" ;;
     esac
   done < "$HVR_CONFIG"
@@ -680,6 +679,6 @@ remove_project_ipfix_files() {
     "$IPFIX_RUNTIME_DIR/diagnostic-promisc.pid" \
     "$IPFIX_RUNTIME_DIR/diagnostic-promisc.log" \
     "$IPFIX_RUNTIME_DIR/diagnostic-promisc-statistics.txt" \
-    "$IPFIX_COLLECTOR_RESULT" "$IPFIX_COLLECTOR_READY"
+    "$IPFIX_COLLECTOR_RESULT" "$IPFIX_COLLECTOR_READY" "$IPFIX_TRAFFIC_START"
   rmdir "$IPFIX_RUNTIME_DIR" 2>/dev/null || true
 }

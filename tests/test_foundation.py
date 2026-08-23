@@ -72,7 +72,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(values["IPFIX_ENABLED"], "1")
         self.assertEqual(values["IPFIX_COLLECTOR_HOST"], "192.0.2.1")
         self.assertEqual(values["IPFIX_COLLECTOR_PORT"], "4739")
-        self.assertEqual(values["IPFIX_OBSERVATION_DOMAIN_ID"], "0")
         self.assertEqual(values["IPFIX_CAPTURE_INTERFACE"], "hvr-lan")
 
     def test_rejects_executable_config(self) -> None:
@@ -123,7 +122,6 @@ class ConfigTests(unittest.TestCase):
         for key, value in (
             ("IPFIX_COLLECTOR_HOST", "203.0.113.1"),
             ("IPFIX_COLLECTOR_PORT", "0"),
-            ("IPFIX_OBSERVATION_DOMAIN_ID", "42"),
             ("IPFIX_CAPTURE_INTERFACE", "hvr-wan"),
         ):
             with self.subTest(key=key):
@@ -794,7 +792,8 @@ class R8IpfixTests(unittest.TestCase):
         self.assertIn("plugins: nfprobe[hvr]", self.config)
         self.assertIn("nfprobe_version[hvr]: 10", self.config)
         self.assertIn("nfprobe_receiver[hvr]: @COLLECTOR_HOST@:@COLLECTOR_PORT@", self.config)
-        self.assertIn("nfprobe_engine[hvr]: 0:0", self.config)
+        self.assertNotIn("nfprobe_engine", self.config)
+        self.assertNotIn("log_stderr_tstamp", self.config)
         self.assertIn('> "$IPFIX_COMMAND_FILE"', self.enable)
 
     def test_required_nfprobe_fields_and_bounded_timeouts(self) -> None:
@@ -811,6 +810,8 @@ class R8IpfixTests(unittest.TestCase):
         self.assertLess(ready, traffic)
         self.assertLess(traffic, wait)
         self.assertIn("--timeout 12", self.integration_test)
+        self.assertIn('touch "$IPFIX_TRAFFIC_START"', self.integration_test)
+        self.assertNotIn("--observation-domain", self.integration_test)
         self.assertNotIn("2048", self.integration_test)
         self.assertNotIn("ping -f", self.integration_test)
 
@@ -823,8 +824,10 @@ class R8IpfixTests(unittest.TestCase):
 
     def test_actual_binary_capability_is_checked_by_startup(self) -> None:
         self.assertIn("pmacctd -V", CHECKER.read_text(encoding="utf-8"))
-        self.assertIn("pmacctd could not start nfprobe", self.enable)
-        self.assertIn("installed pmacctd lacks usable nfprobe support", self.enable)
+        self.assertIn("pmacctd/nfprobe exited during its startup health check", self.enable)
+        self.assertIn("no more plugins active", self.enable)
+        self.assertIn("engine_type:engine_id is only supported on NetFlow v5", self.enable)
+        self.assertIn("hvr/nfprobe", self.enable)
 
     def test_host_network_and_services_are_not_modified(self) -> None:
         combined = self.enable + self.disable + self.integration_test
@@ -878,12 +881,24 @@ class R8IpfixTests(unittest.TestCase):
         data_set = struct.pack("!HH", 1024, len(record) + 5) + record + b"\0"
         length = 16 + len(template_set) + len(data_set)
         packet = struct.pack("!HHIII", 10, length, 0, 0, 0) + template_set + data_set
-        validator = receiver_module.IPFIXValidator(0)
+        validator = receiver_module.IPFIXValidator()
         validator.consume(packet)
         result = validator.result("10.0.0.100")
         self.assertTrue(result["required_fields_complete"])
         self.assertTrue(result["client_source_preserved"])
         self.assertEqual(result["records"], 1)
+        self.assertEqual(result["observation_domains"], [0])
+
+    def test_receiver_discovers_domain_and_rejects_inconsistency(self) -> None:
+        receiver_spec = importlib.util.spec_from_file_location("ipfix_receiver_domain", IPFIX_RECEIVER)
+        receiver_module = importlib.util.module_from_spec(receiver_spec)
+        assert receiver_spec.loader
+        receiver_spec.loader.exec_module(receiver_module)
+        validator = receiver_module.IPFIXValidator()
+        validator.consume(struct.pack("!HHIII", 10, 16, 0, 0, 42))
+        self.assertEqual(validator.result("10.0.0.100")["observation_domains"], [42])
+        with self.assertRaises(receiver_module.IPFIXValidationError):
+            validator.consume(struct.pack("!HHIII", 10, 16, 0, 0, 43))
 
     def test_receiver_rejects_non_ipfix_version(self) -> None:
         receiver_spec = importlib.util.spec_from_file_location("ipfix_receiver_bad", IPFIX_RECEIVER)
@@ -892,7 +907,7 @@ class R8IpfixTests(unittest.TestCase):
         receiver_spec.loader.exec_module(receiver_module)
         packet = struct.pack("!HHIII", 9, 16, 0, 0, 0)
         with self.assertRaises(receiver_module.IPFIXValidationError):
-            receiver_module.IPFIXValidator(0).consume(packet)
+            receiver_module.IPFIXValidator().consume(packet)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ REQUIRED = {
     "DNS_UPSTREAM", "DNS_CACHE_SIZE", "DNS_TEST_NAME", "DNS_TEST_ADDRESS",
     "DNS_TEST_NAME_ALT", "DNS_TEST_ADDRESS_ALT",
     "IPFIX_ENABLED", "IPFIX_COLLECTOR_HOST", "IPFIX_COLLECTOR_PORT",
-    "IPFIX_OBSERVATION_DOMAIN_ID", "IPFIX_CAPTURE_INTERFACE",
+    "IPFIX_CAPTURE_INTERFACE",
 }
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=([^\s#]+)")
 NAME = re.compile(r"hvr-[a-z0-9_.-]+")
@@ -93,8 +93,6 @@ def validate(values: dict[str, str]) -> None:
         raise ValueError("IPFIX_COLLECTOR_PORT must be between 1 and 65535")
     if int(values["IPFIX_COLLECTOR_PORT"]) > 65535:
         raise ValueError("IPFIX_COLLECTOR_PORT must be between 1 and 65535")
-    if values["IPFIX_OBSERVATION_DOMAIN_ID"] != "0":
-        raise ValueError("the R8 pmacct nfprobe engine is configured for Observation Domain ID 0")
     if values["IPFIX_CAPTURE_INTERFACE"] != values["ROUTER_LAN_INTERFACE"]:
         raise ValueError("R8 must capture on the router LAN interface before NAT")
     if upstream.overlaps(lan):

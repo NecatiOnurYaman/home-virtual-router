@@ -156,15 +156,18 @@ printf '  capture: IPv4 on %s in %s (pre-NAT LAN vantage point)\n' \
   "$IPFIX_CAPTURE_INTERFACE" "$ROUTER_NAMESPACE"
 printf '  collector: udp://%s:%s in %s\n' \
   "$IPFIX_COLLECTOR_HOST" "$IPFIX_COLLECTOR_PORT" "$UPSTREAM_NAMESPACE"
-printf '  protocol: IPFIX v10, Observation Domain ID %s\n' "$IPFIX_OBSERVATION_DOMAIN_ID"
+printf '  protocol: IPFIX v10\n'
 printf '  runtime directory: %s\n' "$IPFIX_RUNTIME_DIR"
 printf '  configuration: %s\n' "$IPFIX_CONFIG_FILE"
 printf '  exporter log: %s\n' "$IPFIX_LOG_FILE"
 if [ -s "$IPFIX_COLLECTOR_RESULT" ]; then
   validated_datagrams="$(sed -n 's/^[[:space:]]*"datagrams": \([0-9][0-9]*\),*$/\1/p' "$IPFIX_COLLECTOR_RESULT" | head -n 1)"
+  observed_domain="$(sed -n '/"observation_domains": \[/ { n; s/^[[:space:]]*\([0-9][0-9]*\),*$/\1/p; }' "$IPFIX_COLLECTOR_RESULT" | head -n 1)"
   printf '  last test collector datagrams: %s\n' "${validated_datagrams:-unknown}"
+  printf '  Observation Domain: %s\n' "${observed_domain:-exporter-defined / not yet observed}"
 else
   printf '  last test collector datagrams: not yet observed\n'
+  printf '  Observation Domain: exporter-defined / not yet observed\n'
 fi
 if pmacctd_running; then
   printf '  project pmacctd process: running\n'

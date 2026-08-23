@@ -23,8 +23,7 @@ class IPFIXValidationError(ValueError):
 
 
 class IPFIXValidator:
-    def __init__(self, expected_observation_domain: int = 0) -> None:
-        self.expected_observation_domain = expected_observation_domain
+    def __init__(self) -> None:
         self.templates: dict[int, list[tuple[int, int]]] = {}
         self.datagrams = 0
         self.template_sets = 0
@@ -40,8 +39,11 @@ class IPFIXValidator:
             raise IPFIXValidationError(f"unexpected IPFIX version {version}")
         if message_length != len(packet):
             raise IPFIXValidationError("IPFIX message length does not match UDP datagram length")
-        if domain != self.expected_observation_domain:
-            raise IPFIXValidationError(f"unexpected Observation Domain ID {domain}")
+        if self.observation_domains and domain not in self.observation_domains:
+            raise IPFIXValidationError(
+                f"inconsistent Observation Domain ID {domain}; "
+                f"previously observed {sorted(self.observation_domains)}"
+            )
         self.datagrams += 1
         self.observation_domains.add(domain)
 
@@ -151,14 +153,13 @@ def main() -> int:
     parser.add_argument("--bind", required=True)
     parser.add_argument("--port", required=True, type=int)
     parser.add_argument("--client", required=True)
-    parser.add_argument("--observation-domain", required=True, type=int)
+    parser.add_argument("--traffic-start", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--ready", required=True, type=Path)
     parser.add_argument("--timeout", type=float, default=12.0)
     args = parser.parse_args()
 
-    validator = IPFIXValidator(args.observation_domain)
-    started_at = time.monotonic()
+    validator = IPFIXValidator()
     deadline = time.monotonic() + args.timeout
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
         receiver.bind((args.bind, args.port))
@@ -172,17 +173,20 @@ def main() -> int:
             validator.consume(packet)
             result = validator.result(args.client)
             if (
-                result["template_sets"]
+                args.traffic_start.exists()
+                and result["template_sets"]
                 and result["data_sets"]
                 and result["required_fields_complete"]
                 and result["client_source_preserved"]
             ):
-                result["receive_latency_seconds"] = round(time.monotonic() - started_at, 3)
+                started_at = args.traffic_start.stat().st_mtime
+                result["receive_latency_seconds"] = round(time.time() - started_at, 3)
                 args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
                 return 0
 
     result = validator.result(args.client)
-    result["receive_latency_seconds"] = round(time.monotonic() - started_at, 3)
+    started_at = args.traffic_start.stat().st_mtime
+    result["receive_latency_seconds"] = round(time.time() - started_at, 3)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return 1
 

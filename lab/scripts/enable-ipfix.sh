@@ -56,16 +56,23 @@ printf '%s\n' "$exporter_pid" > "$IPFIX_PID_FILE"
 started=1
 
 for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  pmacctd_running && break
+  if ! pmacctd_running; then
+    sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
+    die "pmacctd/nfprobe exited during its startup health check"
+  fi
+  if grep -Eiq 'no more plugins active|engine_type:engine_id is only supported on NetFlow v5|unknown plugin|invalid plugin|nfprobe.*(not supported|unavailable)|ERROR.*nfprobe|nfprobe.*ERROR' "$IPFIX_LOG_FILE"; then
+    sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
+    die "pmacctd nfprobe plugin startup failed; inspect the project log"
+  fi
   sleep 0.1
 done
 if ! pmacctd_running; then
   sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
   die "pmacctd could not start nfprobe; verify the installed pmacct build contains nfprobe/IPFIX support"
 fi
-if grep -Eiq 'unknown plugin|invalid plugin|nfprobe.*(not supported|unavailable)|ERROR.*nfprobe' "$IPFIX_LOG_FILE"; then
+if ! grep -F 'hvr/nfprobe' "$IPFIX_LOG_FILE" >/dev/null 2>&1; then
   sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
-  die "installed pmacctd lacks usable nfprobe support"
+  die "pmacctd stayed alive but the hvr/nfprobe plugin was not confirmed active"
 fi
 verify_r6_host_state
 

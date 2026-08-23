@@ -1,6 +1,5 @@
 daemonize: false
 logfile: @LOG_FILE@
-log_stderr_tstamp: true
 promisc: false
 pcap_interface: @CAPTURE_INTERFACE@
 pcap_filter: ip
@@ -9,5 +8,4 @@ plugins: nfprobe[hvr]
 aggregate[hvr]: src_host, dst_host, src_port, dst_port, proto, tos, tcpflags
 nfprobe_receiver[hvr]: @COLLECTOR_HOST@:@COLLECTOR_PORT@
 nfprobe_version[hvr]: 10
-nfprobe_engine[hvr]: 0:0
 nfprobe_timeouts[hvr]: tcp=5:tcp.rst=2:tcp.fin=2:udp=3:icmp=3:general=3:maxlife=10:expint=1

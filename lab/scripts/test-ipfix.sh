@@ -37,10 +37,10 @@ cleanup_ipfix_test() {
 }
 trap cleanup_ipfix_test EXIT INT TERM
 
-rm -f "$IPFIX_COLLECTOR_RESULT" "$IPFIX_COLLECTOR_READY"
+rm -f "$IPFIX_COLLECTOR_RESULT" "$IPFIX_COLLECTOR_READY" "$IPFIX_TRAFFIC_START"
 ip netns exec "$UPSTREAM_NAMESPACE" python3 "$IPFIX_RECEIVER" \
   --bind "$IPFIX_COLLECTOR_HOST" --port "$IPFIX_COLLECTOR_PORT" \
-  --client "$client_address" --observation-domain "$IPFIX_OBSERVATION_DOMAIN_ID" \
+  --client "$client_address" --traffic-start "$IPFIX_TRAFFIC_START" \
   --output "$IPFIX_COLLECTOR_RESULT" --ready "$IPFIX_COLLECTOR_READY" --timeout 12 &
 collector_pid=$!
 for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -51,6 +51,7 @@ done
 [ -f "$IPFIX_COLLECTOR_READY" ] || die "IPFIX test receiver did not become ready"
 
 # Deliberately tiny live workload: this is the regression test for softflowd buffering.
+touch "$IPFIX_TRAFFIC_START"
 ip netns exec "$CLIENT_NAMESPACE" ping -c 2 -W 1 "$UPSTREAM_GATEWAY" >/dev/null
 ip netns exec "$CLIENT_NAMESPACE" dig +short +time=2 +tries=1 @"$ROUTER_LAN" "$DNS_TEST_NAME" A >/dev/null
 ip netns exec "$CLIENT_NAMESPACE" dig +tcp +short +time=2 +tries=1 @"$ROUTER_LAN" "$DNS_TEST_NAME_ALT" A >/dev/null
