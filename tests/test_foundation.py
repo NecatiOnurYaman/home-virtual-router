@@ -939,5 +939,49 @@ class R8IpfixTests(unittest.TestCase):
             receiver_module.IPFIXValidator().consume(packet)
 
 
+class R9ObservabilityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.enable = (ROOT / "lab/scripts/enable-observability.sh").read_text(encoding="utf-8")
+        self.disable = (ROOT / "lab/scripts/disable-observability.sh").read_text(encoding="utf-8")
+        self.integration = (ROOT / "lab/scripts/test-observability-integration.sh").read_text(encoding="utf-8")
+        self.cleanup = (ROOT / "lab/scripts/cleanup-legacy-ipfix.sh").read_text(encoding="utf-8")
+        self.defaults = (ROOT / "lab/config/defaults.env").read_text(encoding="utf-8")
+
+    def test_default_mode_preserves_r8_collector(self) -> None:
+        self.assertIn("TELEMETRY_MODE=lab", self.defaults)
+        self.assertIn("IPFIX_COLLECTOR_HOST=192.0.2.1", self.defaults)
+        self.assertIn("TELEMETRY_SUBNET=198.18.0.0/30", self.defaults)
+
+    def test_link_is_point_to_point_without_routes_or_firewall(self) -> None:
+        combined = self.enable + self.disable
+        self.assertIn('type veth peer name "$TELEMETRY_ROUTER_INTERFACE"', self.enable)
+        self.assertIn('address add "$TELEMETRY_HOST_ADDRESS/$telemetry_prefix"', self.enable)
+        self.assertIn('route show default dev "$TELEMETRY_ROUTER_INTERFACE"', self.enable)
+        for forbidden in ("route add", "nft add", "nft delete", "sysctl -w", "systemctl"):
+            self.assertNotIn(forbidden, combined)
+
+    def test_export_view_contains_only_lease_and_dns_log(self) -> None:
+        self.assertIn('ln -s "$DNSMASQ_LEASE_FILE" "$TELEMETRY_EXPORT_DIR/dnsmasq.leases"', self.enable)
+        self.assertIn('ln -s "$DNS_LOG_FILE" "$TELEMETRY_EXPORT_DIR/dnsmasq.log"', self.enable)
+        self.assertNotIn("rm -rf", self.enable + self.disable)
+
+    def test_acceptance_uses_real_services_and_apis(self) -> None:
+        self.assertIn('ip netns exec "$CLIENT_NAMESPACE" ping -c 2', self.integration)
+        self.assertIn('dig +tcp', self.integration)
+        self.assertIn('/api/collector/status', self.integration)
+        self.assertIn('/api/flows', self.integration)
+        self.assertIn('/api/devices', self.integration)
+        self.assertIn('/api/dns', self.integration)
+        self.assertIn('/api/analytics/current', self.integration)
+        self.assertNotIn("IPFIX_RECEIVER", self.integration)
+
+    def test_pmacct_migration_cleanup_requires_verified_identity(self) -> None:
+        self.assertIn('process_starttime "$core_pid"', self.cleanup)
+        self.assertIn('process_is_in_router_namespace "$core_pid"', self.cleanup)
+        self.assertIn('project_nfprobe_pids "$core_pid"', self.cleanup)
+        self.assertNotIn("pkill", self.cleanup)
+        self.assertNotIn("killall", self.cleanup)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,9 @@ REQUIRED = {
     "DNS_TEST_NAME_ALT", "DNS_TEST_ADDRESS_ALT",
     "IPFIX_ENABLED", "IPFIX_COLLECTOR_HOST", "IPFIX_COLLECTOR_PORT",
     "IPFIX_CAPTURE_INTERFACE",
+    "TELEMETRY_MODE", "TELEMETRY_SUBNET", "TELEMETRY_HOST_ADDRESS",
+    "TELEMETRY_ROUTER_ADDRESS", "TELEMETRY_HOST_INTERFACE",
+    "TELEMETRY_ROUTER_INTERFACE",
 }
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=([^\s#]+)")
 NAME = re.compile(r"hvr-[a-z0-9_.-]+")
@@ -87,8 +90,23 @@ def validate(values: dict[str, str]) -> None:
             raise ValueError(f"{key} must be within RFC 5737 upstream test subnet")
     if values["IPFIX_ENABLED"] not in {"0", "1"}:
         raise ValueError("IPFIX_ENABLED must be 0 or 1")
-    if values["IPFIX_COLLECTOR_HOST"] != values["UPSTREAM_GATEWAY"]:
-        raise ValueError("R8 collector must be the isolated upstream namespace address")
+    if values["TELEMETRY_MODE"] not in {"lab", "observability"}:
+        raise ValueError("TELEMETRY_MODE must be lab or observability")
+    telemetry = ipaddress.ip_network(values["TELEMETRY_SUBNET"], strict=True)
+    benchmark = ipaddress.ip_network("198.18.0.0/15")
+    if telemetry.prefixlen != 30 or not telemetry.subnet_of(benchmark):
+        raise ValueError("TELEMETRY_SUBNET must be a /30 within 198.18.0.0/15")
+    telemetry_host = ipaddress.ip_address(values["TELEMETRY_HOST_ADDRESS"])
+    telemetry_router = ipaddress.ip_address(values["TELEMETRY_ROUTER_ADDRESS"])
+    if telemetry_host not in telemetry.hosts() or telemetry_router not in telemetry.hosts():
+        raise ValueError("telemetry addresses must be the two usable TELEMETRY_SUBNET addresses")
+    if telemetry_host == telemetry_router:
+        raise ValueError("telemetry host and router addresses must be unique")
+    if telemetry.overlaps(upstream) or telemetry.overlaps(lan):
+        raise ValueError("TELEMETRY_SUBNET must not overlap the WAN or LAN")
+    expected_collector = values["UPSTREAM_GATEWAY"] if values["TELEMETRY_MODE"] == "lab" else values["TELEMETRY_HOST_ADDRESS"]
+    if values["IPFIX_COLLECTOR_HOST"] != expected_collector:
+        raise ValueError(f"IPFIX_COLLECTOR_HOST must be {expected_collector} in {values['TELEMETRY_MODE']} mode")
     if not re.fullmatch(r"[1-9][0-9]{0,4}", values["IPFIX_COLLECTOR_PORT"]):
         raise ValueError("IPFIX_COLLECTOR_PORT must be between 1 and 65535")
     if int(values["IPFIX_COLLECTOR_PORT"]) > 65535:
@@ -103,7 +121,7 @@ def validate(values: dict[str, str]) -> None:
     namespace_keys = ("UPSTREAM_NAMESPACE", "ROUTER_NAMESPACE", "CLIENT_NAMESPACE")
     interface_keys = (
         "UPSTREAM_INTERFACE", "ROUTER_WAN_INTERFACE", "ROUTER_LAN_INTERFACE",
-        "CLIENT_INTERFACE",
+        "CLIENT_INTERFACE", "TELEMETRY_HOST_INTERFACE", "TELEMETRY_ROUTER_INTERFACE",
     )
     nft_keys = ("NAT_TABLE", "NAT_CHAIN", "FILTER_TABLE", "FILTER_CHAIN")
     for key in namespace_keys + interface_keys + nft_keys:

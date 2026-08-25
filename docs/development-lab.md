@@ -92,6 +92,20 @@ Softflowd 1.1.1-1build1 was evaluated and rejected for the normal R8 path. With 
 
 R8 creates no routes, nftables rules, DHCP/DNS settings, host services, or VM-wide forwarding changes. Export datagrams are router-originated OUTPUT traffic, while the R5 chain governs forwarded traffic. Enable and disable snapshot the established host safety state, operate only on the PID-validated namespace process, and preserve R7 and all earlier stages.
 
+R9 has two explicit modes. `lab` retains the R8 receiver at `192.0.2.1:4739`. `observability` uses a dedicated veth because loopback is namespace-local and the Ubuntu/macOS default paths must remain untouched:
+
+```text
+hvr-router / hvr-observe             Ubuntu host / hvr-obs-host
+198.18.0.2/30   ------------------   198.18.0.1/30
+       pmacct IPFIX v10 UDP --------> Docker-published UDP/4739
+```
+
+The `/30` is within RFC 2544's benchmarking range and is validated not to overlap the lab WAN or LAN. No default route, forwarding route, host forwarding, nftables rule, UTM-interface setting, or macOS setting is added. Router-originated telemetry can reach the host; `hvr-client` receives no route to the link. Interface names use shortened `hvr-*` forms to fit Linux IFNAMSIZ.
+
+`make observability-enable` also creates `/run/home-virtual-router/export/` with only links to the real DHCP lease and router DNS log. The observability Compose project binds those entries individually as read-only files. It never mounts all of `/run` or either source repository. `make observability-disable` refuses while the exporter is live, removes the exact host veth (which removes its peer), and deletes only those two export entries.
+
+Exporter startup requires exactly one core and one direct nfprobe child among all pmacct processes in `hvr-router`. An unexpected pair fails closed and reports its PIDs. For a process left by an older project run, inspect its command, `/proc` start time, network namespace, and parentage, then use `sudo lab/scripts/cleanup-legacy-ipfix.sh <verified-core-pid> <verified-starttime>`. The helper repeats every identity check and never uses `pkill`, `killall`, or name-only selection.
+
 ## Safety boundary
 
 Project scripts do not launch or control UTM and must never alter macOS networking. Future networking commands belong inside the Ubuntu VM and must use the shared guards in `router/scripts/safety.sh`, explicit `hvr-` namespace and interface names, and targeted cleanup.
@@ -137,6 +151,9 @@ The repository does not create this marker and cannot create it on macOS. Removi
 - `make ipfix-enable` starts namespace-scoped pmacctd/nfprobe on `hvr-lan`, exporting IPFIX v10 over UDP to `192.0.2.1:4739`.
 - `make ipfix-test` runs the isolated structural collector and proves the exported client source is pre-NAT.
 - `make ipfix-disable` stops only the project exporter and preserves R7 and all earlier stages.
+- `make observability-enable` creates only the R9 point-to-point telemetry link and narrow file export view.
+- `make integration-test` verifies real DHCP, DNS, IPFIX persistence, APIs, analytics, and DNS correlation against an already-running backend.
+- `make observability-disable` removes only the R9 link and export view after IPFIX is disabled.
 - `make lab-destroy` explicitly removes only the configured namespaces and exact-name partial veth endpoints.
 
 The create, status, test, and destroy targets visibly use `sudo` because namespace administration requires root. Creation fails if the topology already exists. Teardown tolerates missing pieces and never performs wildcard or host-wide cleanup.

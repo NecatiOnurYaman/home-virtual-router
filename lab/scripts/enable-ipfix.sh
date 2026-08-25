@@ -87,6 +87,7 @@ if [ "$healthy" -ne 1 ] || ! pmacctd_running; then
   sed 's/^/  /' "$IPFIX_LOG_FILE" >&2
   die "pmacct core and hvr/nfprobe plugin did not remain healthy in hvr-router"
 fi
+assert_single_project_pmacct_pair
 core_pid="$(read_project_pid "$IPFIX_PID_FILE")"
 process_starttime "$core_pid" > "$IPFIX_CORE_STARTTIME_FILE"
 capture_pmacct_process_tree

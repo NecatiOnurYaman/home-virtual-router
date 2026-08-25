@@ -12,6 +12,8 @@ require_root
 load_topology_config
 validate_topology_names
 command -v ip >/dev/null 2>&1 || die "iproute2 is required"
+[ ! -e "/sys/class/net/$TELEMETRY_HOST_INTERFACE" ] ||
+  die "R9 telemetry link is active; disable IPFIX and run make observability-disable first"
 
 default_route_before="$(capture_default_route)"
 require_default_route_is_not_lab_interface "$default_route_before"

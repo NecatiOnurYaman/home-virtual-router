@@ -45,6 +45,7 @@ readonly IPFIX_COLLECTOR_RESULT="$IPFIX_RUNTIME_DIR/collector-result.json"
 readonly IPFIX_COLLECTOR_READY="$IPFIX_RUNTIME_DIR/collector.ready"
 readonly IPFIX_TRAFFIC_START="$IPFIX_RUNTIME_DIR/traffic-start"
 readonly IPFIX_RECEIVER="$HVR_REPO_DIR/router/scripts/ipfix_test_receiver.py"
+readonly TELEMETRY_EXPORT_DIR="/run/home-virtual-router/export"
 readonly LEGACY_IPFIX_PID_FILE="$IPFIX_RUNTIME_DIR/softflowd.pid"
 readonly LEGACY_IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"
 
@@ -82,6 +83,12 @@ IPFIX_ENABLED=""
 IPFIX_COLLECTOR_HOST=""
 IPFIX_COLLECTOR_PORT=""
 IPFIX_CAPTURE_INTERFACE=""
+TELEMETRY_MODE=""
+TELEMETRY_SUBNET=""
+TELEMETRY_HOST_ADDRESS=""
+TELEMETRY_ROUTER_ADDRESS=""
+TELEMETRY_HOST_INTERFACE=""
+TELEMETRY_ROUTER_INTERFACE=""
 
 load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
@@ -118,6 +125,12 @@ load_topology_config() {
       IPFIX_COLLECTOR_HOST) IPFIX_COLLECTOR_HOST="$value" ;;
       IPFIX_COLLECTOR_PORT) IPFIX_COLLECTOR_PORT="$value" ;;
       IPFIX_CAPTURE_INTERFACE) IPFIX_CAPTURE_INTERFACE="$value" ;;
+      TELEMETRY_MODE) TELEMETRY_MODE="$value" ;;
+      TELEMETRY_SUBNET) TELEMETRY_SUBNET="$value" ;;
+      TELEMETRY_HOST_ADDRESS) TELEMETRY_HOST_ADDRESS="$value" ;;
+      TELEMETRY_ROUTER_ADDRESS) TELEMETRY_ROUTER_ADDRESS="$value" ;;
+      TELEMETRY_HOST_INTERFACE) TELEMETRY_HOST_INTERFACE="$value" ;;
+      TELEMETRY_ROUTER_INTERFACE) TELEMETRY_ROUTER_INTERFACE="$value" ;;
     esac
   done < "$HVR_CONFIG"
 }
@@ -144,7 +157,7 @@ capture_default_route() {
 require_default_route_is_not_lab_interface() {
   local route="$1"
   local interface
-  for interface in "$UPSTREAM_INTERFACE" "$ROUTER_WAN_INTERFACE" "$ROUTER_LAN_INTERFACE" "$CLIENT_INTERFACE"; do
+  for interface in "$UPSTREAM_INTERFACE" "$ROUTER_WAN_INTERFACE" "$ROUTER_LAN_INTERFACE" "$CLIENT_INTERFACE" "$TELEMETRY_HOST_INTERFACE" "$TELEMETRY_ROUTER_INTERFACE"; do
     if printf '%s\n' "$route" | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") print $(i + 1)}' | grep -F -x -- "$interface" >/dev/null 2>&1; then
       die "default route uses reserved lab interface $interface; refusing lab operation"
     fi
@@ -192,7 +205,7 @@ is_known_namespace() {
 
 is_known_interface() {
   case "$1" in
-    "$UPSTREAM_INTERFACE"|"$ROUTER_WAN_INTERFACE"|"$ROUTER_LAN_INTERFACE"|"$CLIENT_INTERFACE") return 0 ;;
+    "$UPSTREAM_INTERFACE"|"$ROUTER_WAN_INTERFACE"|"$ROUTER_LAN_INTERFACE"|"$CLIENT_INTERFACE"|"$TELEMETRY_HOST_INTERFACE"|"$TELEMETRY_ROUTER_INTERFACE") return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -682,6 +695,22 @@ pmacct_nfprobe_running() {
 
 pmacctd_running() {
   pmacct_core_running && pmacct_nfprobe_running
+}
+
+assert_single_project_pmacct_pair() {
+  local core_pid plugin_pid pid found=""
+  core_pid="$(read_project_pid "$IPFIX_PID_FILE")" || die "project pmacct core PID is unavailable"
+  plugin_pid="$(project_nfprobe_pids "$core_pid")"
+  [ "$(printf '%s\n' "$plugin_pid" | awk 'NF {count++} END {print count+0}')" -eq 1 ] ||
+    die "expected exactly one nfprobe child for project pmacct core $core_pid"
+  for pid in $(ip netns pids "$ROUTER_NAMESPACE" 2>/dev/null || true); do
+    process_is_pmacctd "$pid" || continue
+    found="$found $pid"
+  done
+  [ "$(printf '%s\n' $found | awk 'NF {count++} END {print count+0}')" -eq 2 ] ||
+    die "unexpected pmacct process set in $ROUTER_NAMESPACE:$found; inspect process identity and use cleanup-legacy-ipfix.sh only for a verified project core"
+  printf '%s\n' $found | grep -F -x "$core_pid" >/dev/null || die "current project pmacct core is absent from namespace process set"
+  printf '%s\n' $found | grep -F -x "$plugin_pid" >/dev/null || die "current project nfprobe child is absent from namespace process set"
 }
 
 capture_pmacct_process_tree() {
