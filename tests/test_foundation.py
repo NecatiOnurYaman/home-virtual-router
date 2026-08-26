@@ -966,14 +966,37 @@ class R9ObservabilityTests(unittest.TestCase):
         self.assertNotIn("rm -rf", self.enable + self.disable)
 
     def test_acceptance_uses_real_services_and_apis(self) -> None:
-        self.assertIn('ip netns exec "$CLIENT_NAMESPACE" ping -c 2', self.integration)
-        self.assertIn('dig +tcp', self.integration)
+        self.assertIn('ping -c 2 -W 1 "$UPSTREAM_GATEWAY"', self.integration)
+        self.assertNotIn('ping -c 2 -W 1 "$DNS_TEST_ADDRESS"', self.integration)
+        self.assertNotIn('ping -c 2 -W 1 "$DNS_TEST_ADDRESS_ALT"', self.integration)
+        self.assertIn('"@$ROUTER_LAN" "$DNS_TEST_NAME" A', self.integration)
+        self.assertIn('dig +tcp +tries=1 +time=2 "@$ROUTER_LAN" "$DNS_TEST_NAME_ALT" A', self.integration)
         self.assertIn('/api/collector/status', self.integration)
         self.assertIn('/api/flows', self.integration)
         self.assertIn('/api/devices', self.integration)
         self.assertIn('/api/dns', self.integration)
         self.assertIn('/api/analytics/current', self.integration)
         self.assertNotIn("IPFIX_RECEIVER", self.integration)
+
+    def test_acceptance_probe_failures_are_explicit(self) -> None:
+        self.assertIn('die "client could not reach the R9 routed test endpoint $UPSTREAM_GATEWAY"', self.integration)
+        self.assertIn('die "client UDP DNS query for $DNS_TEST_NAME through $ROUTER_LAN failed"', self.integration)
+        self.assertIn('die "client TCP DNS query for $DNS_TEST_NAME_ALT through $ROUTER_LAN failed"', self.integration)
+        self.assertIn("R9 assertion failed:", self.integration)
+
+    def test_acceptance_requires_fresh_rows_and_bounded_interval_analytics(self) -> None:
+        self.assertIn('baseline="$(date -u +%Y-%m-%dT%H:%M:%SZ)"', self.integration)
+        self.assertIn('parsed_time(item["created_at"]) >= baseline', self.integration)
+        self.assertIn('"start": baseline_raw', self.integration)
+        self.assertIn('deadline = time.monotonic() + 35', self.integration)
+        self.assertIn('get("/api/analytics/protocols", {"start": baseline_raw, "end": end})', self.integration)
+        self.assertIn('status["received_datagrams"] > before["received_datagrams"]', self.integration)
+        self.assertIn('status["persisted_flows"] > before["persisted_flows"]', self.integration)
+        self.assertNotIn('analytics_current["flow_count"] < 1', self.integration)
+        self.assertIn('R9 acceptance changed the R6 client DHCP address', self.integration)
+        self.assertIn('R9 acceptance changed the R7 DNS state', self.integration)
+        self.assertIn('R9 acceptance changed the R4 NAT state', self.integration)
+        self.assertIn('R9 acceptance changed the R5 firewall state', self.integration)
 
     def test_pmacct_migration_cleanup_requires_verified_identity(self) -> None:
         self.assertIn('process_starttime "$core_pid"', self.cleanup)
