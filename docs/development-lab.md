@@ -106,6 +106,12 @@ The `/30` is within RFC 2544's benchmarking range and is validated not to overla
 
 Exporter startup requires exactly one core and one direct nfprobe child among all pmacct processes in `hvr-router`. An unexpected pair fails closed and reports its PIDs. For a process left by an older project run, inspect its command, `/proc` start time, network namespace, and parentage, then use `sudo lab/scripts/cleanup-legacy-ipfix.sh <verified-core-pid> <verified-starttime>`. The helper repeats every identity check and never uses `pkill`, `killall`, or name-only selection.
 
+R10 adds local inspection, not telemetry transport. `make metrics-show` enters `hvr-router` and reads `/sys/class/net` there, mapping the validated configuration to stable roles: `lan` uses `ROUTER_LAN_INTERFACE`, `wan` uses `ROUTER_WAN_INTERFACE`, and `telemetry` uses `TELEMETRY_ROUTER_INTERFACE`. Kernel names remain metadata rather than permanent role definitions. The command requires the complete R9 topology and excludes loopback and host-only interfaces.
+
+One logical snapshot uses one UTC timestamp. `/proc/uptime` supplies uptime; `/proc/meminfo` supplies `MemTotal` and `MemAvailable`; and two aggregate `/proc/stat` samples 0.1 seconds apart supply CPU utilization as `(delta_total - delta_idle) / delta_total`. CPU and memory utilization are ratios, not percentages. Because a network namespace shares its host kernel, these system values describe the Ubuntu VM kernel, while interface counters and state describe only interfaces visible in `hvr-router`.
+
+The interface byte, packet, error, and drop values are cumulative kernel counters. Reboot, interface recreation, or lab topology recreation can reset them. R10 preserves the current values without rate calculation, reset compensation, history, rolling averages, or anomaly analysis. `interface.operstate` is retained as a string-valued `state`, rather than being mislabeled as a numeric counter or gauge. R11 network export remains unimplemented.
+
 ## Safety boundary
 
 Project scripts do not launch or control UTM and must never alter macOS networking. Future networking commands belong inside the Ubuntu VM and must use the shared guards in `router/scripts/safety.sh`, explicit `hvr-` namespace and interface names, and targeted cleanup.
@@ -154,6 +160,8 @@ The repository does not create this marker and cannot create it on macOS. Removi
 - `make observability-enable` creates only the R9 point-to-point telemetry link and narrow file export view.
 - `make integration-test` verifies real DHCP, DNS, IPFIX persistence, APIs, analytics, and DNS correlation against an already-running backend.
 - `make observability-disable` removes only the R9 link and export view after IPFIX is disabled.
+- `make metrics-show` emits one read-only R10 JSON snapshot from inside `hvr-router`.
+- `make metrics-test` generates three pings to `192.0.2.1` and proves LAN/WAN cumulative traffic counters increase.
 - `make lab-destroy` explicitly removes only the configured namespaces and exact-name partial veth endpoints.
 
 The create, status, test, and destroy targets visibly use `sudo` because namespace administration requires root. Creation fails if the topology already exists. Teardown tolerates missing pieces and never performs wildcard or host-wide cleanup.

@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -125,3 +125,11 @@ observability-disable:
 integration-test:
 	@echo "Running the R9 real-telemetry acceptance test requires root and an already-running observability backend."
 	sudo lab/scripts/test-observability-integration.sh
+
+metrics-show:
+	@echo "Collecting one read-only R10 snapshot inside hvr-router requires root. Output follows as JSON." >&2
+	@sudo lab/scripts/show-metrics.sh
+
+metrics-test:
+	@echo "Validating R10 interface counters with isolated routed traffic requires root."
+	sudo lab/scripts/test-metrics.sh
