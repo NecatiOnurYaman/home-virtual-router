@@ -48,6 +48,15 @@ readonly IPFIX_RECEIVER="$HVR_REPO_DIR/router/scripts/ipfix_test_receiver.py"
 readonly TELEMETRY_EXPORT_DIR="/run/home-virtual-router/export"
 readonly LEGACY_IPFIX_PID_FILE="$IPFIX_RUNTIME_DIR/softflowd.pid"
 readonly LEGACY_IPFIX_CONTROL_SOCKET="$IPFIX_RUNTIME_DIR/softflowd.ctl"
+readonly METRICS_EXPORT_RUNTIME_DIR="/run/home-virtual-router/metrics-export"
+readonly METRICS_EXPORT_PID_FILE="$METRICS_EXPORT_RUNTIME_DIR/exporter.pid"
+readonly METRICS_EXPORT_STARTTIME_FILE="$METRICS_EXPORT_RUNTIME_DIR/exporter.starttime"
+readonly METRICS_EXPORT_LOG_FILE="$METRICS_EXPORT_RUNTIME_DIR/exporter.log"
+readonly METRICS_EXPORT_COMMAND_FILE="$METRICS_EXPORT_RUNTIME_DIR/command.txt"
+readonly METRICS_EXPORT_RESULT_FILE="$METRICS_EXPORT_RUNTIME_DIR/receiver-result.json"
+readonly METRICS_EXPORT_READY_FILE="$METRICS_EXPORT_RUNTIME_DIR/test-receiver.ready"
+readonly METRICS_EXPORTER="$HVR_REPO_DIR/router/scripts/export_metrics.py"
+readonly METRICS_TEST_RECEIVER="$HVR_REPO_DIR/router/scripts/metrics_test_receiver.py"
 
 # These variables are populated only from an allowlist after Python validation.
 UPSTREAM_SUBNET=""
@@ -89,6 +98,13 @@ TELEMETRY_HOST_ADDRESS=""
 TELEMETRY_ROUTER_ADDRESS=""
 TELEMETRY_HOST_INTERFACE=""
 TELEMETRY_ROUTER_INTERFACE=""
+ROUTER_ID=""
+METRICS_EXPORT_ENABLED=""
+METRICS_EXPORT_HOST=""
+METRICS_EXPORT_PORT=""
+METRICS_EXPORT_PATH=""
+METRICS_EXPORT_INTERVAL_SECONDS=""
+METRICS_EXPORT_TIMEOUT_SECONDS=""
 
 load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
@@ -131,6 +147,13 @@ load_topology_config() {
       TELEMETRY_ROUTER_ADDRESS) TELEMETRY_ROUTER_ADDRESS="$value" ;;
       TELEMETRY_HOST_INTERFACE) TELEMETRY_HOST_INTERFACE="$value" ;;
       TELEMETRY_ROUTER_INTERFACE) TELEMETRY_ROUTER_INTERFACE="$value" ;;
+      ROUTER_ID) ROUTER_ID="$value" ;;
+      METRICS_EXPORT_ENABLED) METRICS_EXPORT_ENABLED="$value" ;;
+      METRICS_EXPORT_HOST) METRICS_EXPORT_HOST="$value" ;;
+      METRICS_EXPORT_PORT) METRICS_EXPORT_PORT="$value" ;;
+      METRICS_EXPORT_PATH) METRICS_EXPORT_PATH="$value" ;;
+      METRICS_EXPORT_INTERVAL_SECONDS) METRICS_EXPORT_INTERVAL_SECONDS="$value" ;;
+      METRICS_EXPORT_TIMEOUT_SECONDS) METRICS_EXPORT_TIMEOUT_SECONDS="$value" ;;
     esac
   done < "$HVR_CONFIG"
 }
@@ -662,6 +685,49 @@ process_is_in_router_namespace() {
   process_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null)" || return 1
   router_netns="$(ip netns exec "$ROUTER_NAMESPACE" readlink /proc/self/ns/net 2>/dev/null)" || return 1
   [ "$process_netns" = "$router_netns" ]
+}
+
+metrics_exporter_identity_matches() {
+  local pid="$1" expected_starttime current_starttime command_line executable
+  process_is_running "$pid" || return 1
+  [ -r "$METRICS_EXPORT_STARTTIME_FILE" ] || return 1
+  expected_starttime="$(cat "$METRICS_EXPORT_STARTTIME_FILE")"
+  current_starttime="$(process_starttime "$pid")" || return 1
+  [ "$current_starttime" = "$expected_starttime" ] || return 1
+  executable="$(readlink "/proc/$pid/exe" 2>/dev/null)" || return 1
+  case "${executable##*/}" in python3|python3.[0-9]*) ;; *) return 1 ;; esac
+  command_line="$(tr '\0' '\n' < "/proc/$pid/cmdline")"
+  printf '%s\n' "$command_line" | grep -F -x -- "$METRICS_EXPORTER" >/dev/null || return 1
+  printf '%s\n' "$command_line" | grep -F -x -- "$ROUTER_ID" >/dev/null || return 1
+  printf '%s\n' "$command_line" | grep -F -x -- "$METRICS_EXPORT_HOST" >/dev/null || return 1
+  process_is_in_router_namespace "$pid"
+}
+
+metrics_exporter_running() {
+  local pid
+  pid="$(read_project_pid "$METRICS_EXPORT_PID_FILE")" || return 1
+  metrics_exporter_identity_matches "$pid"
+}
+
+stop_metrics_exporter_if_present() {
+  local pid attempt
+  [ -e "$METRICS_EXPORT_PID_FILE" ] || return 0
+  if ! pid="$(read_project_pid "$METRICS_EXPORT_PID_FILE")"; then
+    rm -f -- "$METRICS_EXPORT_PID_FILE" "$METRICS_EXPORT_STARTTIME_FILE"
+    return 0
+  fi
+  if ! process_is_running "$pid"; then
+    rm -f -- "$METRICS_EXPORT_PID_FILE" "$METRICS_EXPORT_STARTTIME_FILE"
+    return 0
+  fi
+  metrics_exporter_identity_matches "$pid" || die "metrics exporter PID metadata does not identify the expected project process"
+  kill "$pid"
+  for attempt in {1..40}; do
+    process_is_running "$pid" || break
+    sleep 0.05
+  done
+  process_is_running "$pid" && die "metrics exporter process $pid did not stop"
+  rm -f -- "$METRICS_EXPORT_PID_FILE" "$METRICS_EXPORT_STARTTIME_FILE"
 }
 
 pmacct_core_running() {

@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -133,3 +133,19 @@ metrics-show:
 metrics-test:
 	@echo "Validating R10 interface counters with isolated routed traffic requires root."
 	sudo lab/scripts/test-metrics.sh
+
+metrics-export-enable:
+	@echo "Starting the R11 router metrics HTTP exporter requires root."
+	sudo lab/scripts/enable-metrics-export.sh
+
+metrics-export-disable:
+	@echo "Stopping only the exact R11 exporter process requires root."
+	sudo lab/scripts/disable-metrics-export.sh
+
+metrics-export-status:
+	@echo "Inspecting R11 exporter identity and target requires root."
+	sudo lab/scripts/status-metrics-export.sh
+
+metrics-export-test:
+	@echo "Testing real R11 HTTP pushes across the isolated namespaces requires root."
+	sudo lab/scripts/test-metrics-export.sh

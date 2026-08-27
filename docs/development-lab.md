@@ -106,11 +106,13 @@ The `/30` is within RFC 2544's benchmarking range and is validated not to overla
 
 Exporter startup requires exactly one core and one direct nfprobe child among all pmacct processes in `hvr-router`. An unexpected pair fails closed and reports its PIDs. For a process left by an older project run, inspect its command, `/proc` start time, network namespace, and parentage, then use `sudo lab/scripts/cleanup-legacy-ipfix.sh <verified-core-pid> <verified-starttime>`. The helper repeats every identity check and never uses `pkill`, `killall`, or name-only selection.
 
-R10 adds local inspection, not telemetry transport. `make metrics-show` enters `hvr-router` and reads `/sys/class/net` there, mapping the validated configuration to stable roles: `lan` uses `ROUTER_LAN_INTERFACE`, `wan` uses `ROUTER_WAN_INTERFACE`, and `telemetry` uses `TELEMETRY_ROUTER_INTERFACE`. Kernel names remain metadata rather than permanent role definitions. The command requires the complete R9 topology and excludes loopback and host-only interfaces.
+R10 supplies the snapshot model used unchanged by R11. `make metrics-show` enters `hvr-router` and reads `/sys/class/net` there, mapping the validated configuration to stable roles: `lan` uses `ROUTER_LAN_INTERFACE`, `wan` uses `ROUTER_WAN_INTERFACE`, and `telemetry` uses `TELEMETRY_ROUTER_INTERFACE`. Kernel names remain metadata rather than permanent role definitions. The command requires the complete R9 topology and excludes loopback and host-only interfaces.
 
 One logical snapshot uses one UTC timestamp. `/proc/uptime` supplies uptime; `/proc/meminfo` supplies `MemTotal` and `MemAvailable`; and two aggregate `/proc/stat` samples 0.1 seconds apart supply CPU utilization as `(delta_total - delta_idle) / delta_total`. CPU and memory utilization are ratios, not percentages. Because a network namespace shares its host kernel, these system values describe the Ubuntu VM kernel, while interface counters and state describe only interfaces visible in `hvr-router`.
 
-The interface byte, packet, error, and drop values are cumulative kernel counters. Reboot, interface recreation, or lab topology recreation can reset them. R10 preserves the current values without rate calculation, reset compensation, history, rolling averages, or anomaly analysis. `interface.operstate` is retained as a string-valued `state`, rather than being mislabeled as a numeric counter or gauge. R11 network export remains unimplemented.
+The interface byte, packet, error, and drop values are cumulative kernel counters. Reboot, interface recreation, or lab topology recreation can reset them. R10 preserves the current values without rate calculation, reset compensation, history, rolling averages, or anomaly analysis. `interface.operstate` is retained as a string-valued `state`, rather than being mislabeled as a numeric counter or gauge.
+
+R11 wraps each newly collected snapshot with `protocol_version: 1` and the configured stable `router_id`, then posts compact JSON over HTTP/TCP with `Content-Type: application/json`. Lab mode targets `192.0.2.1:9101/v1/router-metrics`; observability mode uses the existing point-to-point host address. This router-originated traffic changes no forwarding, routes, nftables, UTM interface, or macOS networking. Scheduling uses a monotonic clock. Delivery failures are logged under `/run/home-virtual-router/metrics-export/` and skipped; there is deliberately no persistent queue, replay, rate calculation, daemon packaging, production receiver, or later-stage analysis. Plain HTTP assumes the isolated lab or telemetry link is trusted. HNOP Stage 15 will own the actual receiver and storage; R12 will own persistent supervision and production hardening.
 
 ## Safety boundary
 
@@ -162,6 +164,10 @@ The repository does not create this marker and cannot create it on macOS. Removi
 - `make observability-disable` removes only the R9 link and export view after IPFIX is disabled.
 - `make metrics-show` emits one read-only R10 JSON snapshot from inside `hvr-router`.
 - `make metrics-test` generates three pings to `192.0.2.1` and proves LAN/WAN cumulative traffic counters increase.
+- `make metrics-export-enable` starts the exact R11 HTTP push process inside `hvr-router`.
+- `make metrics-export-status` verifies its recorded process identity, target, and network namespace.
+- `make metrics-export-test` proves malformed input is rejected and multiple real snapshots arrive from `192.0.2.2`.
+- `make metrics-export-disable` stops only that process and preserves R1-R10.
 - `make lab-destroy` explicitly removes only the configured namespaces and exact-name partial veth endpoints.
 
 The create, status, test, and destroy targets visibly use `sudo` because namespace administration requires root. Creation fails if the topology already exists. Teardown tolerates missing pieces and never performs wildcard or host-wide cleanup.

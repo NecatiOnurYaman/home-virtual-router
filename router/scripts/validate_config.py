@@ -22,6 +22,9 @@ REQUIRED = {
     "TELEMETRY_MODE", "TELEMETRY_SUBNET", "TELEMETRY_HOST_ADDRESS",
     "TELEMETRY_ROUTER_ADDRESS", "TELEMETRY_HOST_INTERFACE",
     "TELEMETRY_ROUTER_INTERFACE",
+    "ROUTER_ID", "METRICS_EXPORT_ENABLED", "METRICS_EXPORT_HOST",
+    "METRICS_EXPORT_PORT", "METRICS_EXPORT_PATH",
+    "METRICS_EXPORT_INTERVAL_SECONDS", "METRICS_EXPORT_TIMEOUT_SECONDS",
 }
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=([^\s#]+)")
 NAME = re.compile(r"hvr-[a-z0-9_.-]+")
@@ -113,6 +116,27 @@ def validate(values: dict[str, str]) -> None:
         raise ValueError("IPFIX_COLLECTOR_PORT must be between 1 and 65535")
     if values["IPFIX_CAPTURE_INTERFACE"] != values["ROUTER_LAN_INTERFACE"]:
         raise ValueError("R8 must capture on the router LAN interface before NAT")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", values["ROUTER_ID"]):
+        raise ValueError("ROUTER_ID must be a lowercase DNS-label-like identifier")
+    if values["METRICS_EXPORT_ENABLED"] not in {"0", "1"}:
+        raise ValueError("METRICS_EXPORT_ENABLED must be 0 or 1")
+    expected_metrics_host = values["UPSTREAM_GATEWAY"] if values["TELEMETRY_MODE"] == "lab" else values["TELEMETRY_HOST_ADDRESS"]
+    if values["METRICS_EXPORT_HOST"] != expected_metrics_host:
+        raise ValueError(f"METRICS_EXPORT_HOST must be {expected_metrics_host} in {values['TELEMETRY_MODE']} mode")
+    if not re.fullmatch(r"[1-9][0-9]{0,4}", values["METRICS_EXPORT_PORT"]) or int(values["METRICS_EXPORT_PORT"]) > 65535:
+        raise ValueError("METRICS_EXPORT_PORT must be between 1 and 65535")
+    if values["METRICS_EXPORT_PORT"] == "9100":
+        raise ValueError("METRICS_EXPORT_PORT 9100 is reserved for the later pull endpoint")
+    path = values["METRICS_EXPORT_PATH"]
+    if not re.fullmatch(r"/[A-Za-z0-9._~/-]+", path) or "//" in path:
+        raise ValueError("METRICS_EXPORT_PATH must be a simple absolute HTTP path")
+    for key, minimum, maximum in (("METRICS_EXPORT_INTERVAL_SECONDS", 0.1, 3600), ("METRICS_EXPORT_TIMEOUT_SECONDS", 0.1, 60)):
+        try:
+            duration = float(values[key])
+        except ValueError as error:
+            raise ValueError(f"{key} must be numeric") from error
+        if not minimum <= duration <= maximum:
+            raise ValueError(f"{key} must be between {minimum} and {maximum}")
     if upstream.overlaps(lan):
         raise ValueError("UPSTREAM_SUBNET and LAN_SUBNET must not overlap")
     address_keys = ("UPSTREAM_GATEWAY", "ROUTER_WAN", "ROUTER_LAN", "CLIENT_ADDRESS")
