@@ -232,6 +232,25 @@ false
         self.assertIn("$22", inner)
         self.assertNotIn("pgrep", inner)
 
+    def test_simulation_dhcp_starts_clean_and_reports_declines(self) -> None:
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        hook = (ROOT / "physical/scripts/simulation-dhclient-hook.sh").read_text(encoding="utf-8")
+        self.assertIn("simulated client has no stale IPv4 address", inner)
+        self.assertIn("simulated client has no stale default route", inner)
+        self.assertIn("simulated client has no stale neighbor state", inner)
+        self.assertIn("DHCP pool is unused before acquisition", inner)
+        self.assertIn("timeout 20", inner)
+        self.assertIn("arp or icmp", inner)
+        self.assertIn("DHCP/ARP diagnostic capture readiness", inner)
+        for diagnostic in ("DHCP failure diagnostic", "dhclient hook log", "dnsmasq leases", "dnsmasq log", "DHCP/ARP capture"):
+            self.assertIn(diagnostic, inner)
+        self.assertIn("! grep -F DHCPDECLINE", inner)
+        self.assertIn("client-netns", hook)
+        self.assertIn("readlink /proc/self/ns/net", hook)
+        self.assertNotIn("HVR_INTERNAL_PHYSICAL_SIMULATION", hook)
+        for forbidden in ("ping-check false", "do-forward-updates", "arping", "chmod 777"):
+            self.assertNotIn(forbidden, inner + hook)
+
     def test_host_execution_and_exact_owned_objects(self) -> None:
         topology = TOPOLOGY_COMMON.read_text(encoding="utf-8")
         self.assertIn('if [ "$DEPLOYMENT_MODE" = "physical" ]; then nft "$@"', topology)

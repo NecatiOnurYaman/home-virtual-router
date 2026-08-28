@@ -3,10 +3,15 @@ set -euo pipefail
 
 readonly expected_interface="hvr-sim-client"
 readonly state_dir="/run/home-virtual-router/physical-simulation"
+readonly context_file="$state_dir/client-netns"
 [ "$(id -u)" -eq 0 ] || exit 1
-[ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-}" = 1 ] || exit 1
+[ "$0" = "$state_dir/dhclient-hook" ] || exit 1
+[ "$(stat -c %u:%g:%a "$context_file" 2>/dev/null)" = 0:0:600 ] || exit 1
+[ "$(cat "$context_file")" = "$(readlink /proc/self/ns/net)" ] || exit 1
 [ "${interface:-}" = "$expected_interface" ] || exit 1
 install -d -o 0 -g 0 -m 0700 "$state_dir"
+printf '%s interface=%s address=%s\n' "${reason:-unknown}" "${interface:-}" "${new_ip_address:-}" >> "$state_dir/dhclient-hook.log"
+chmod 0600 "$state_dir/dhclient-hook.log"
 
 case "${reason:-}" in
   BOUND|RENEW|REBIND|REBOOT)

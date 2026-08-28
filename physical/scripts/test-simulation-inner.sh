@@ -28,11 +28,23 @@ dhcp_lease_ok() {
   [ "$client_address" != 10.0.0.10/24 ]
 }
 dhcp_route_ok() { ip -n hvr-sim-client-ns route show default | grep -E '^default via 10\.0\.0\.1 dev hvr-sim-client([[:space:]]|$)' >/dev/null; }
+client_ipv4_clean() { [ -z "$(ip -n hvr-sim-client-ns -o -4 address show dev hvr-sim-client scope global)" ]; }
+client_route_clean() { ! ip -n hvr-sim-client-ns -o -4 route show default | grep -q .; }
+client_neighbor_clean() { [ -z "$(ip -n hvr-sim-client-ns neigh show dev hvr-sim-client)" ]; }
+simulation_pool_unused() {
+  local address
+  for address in $(ip -o -4 address show | awk '{sub(/\/.*/, "", $4); print $4}') \
+    $(ip -n hvr-sim-client-ns -o -4 address show | awk '{sub(/\/.*/, "", $4); print $4}') \
+    $(ip -n hvr-sim-upstream-ns -o -4 address show | awk '{sub(/\/.*/, "", $4); print $4}'); do
+    case "$address" in 10.0.0.1??) return 1 ;; esac
+  done
+}
 client_namespace_exists() { ip netns list | awk '{print $1}' | grep -F -x hvr-sim-client-ns >/dev/null; }
 client_interface_exists() { ip -n hvr-sim-client-ns link show dev hvr-sim-client >/dev/null 2>&1; }
 client_interface_up() { ip -n hvr-sim-client-ns -o link show dev hvr-sim-client | grep -q '<[^>]*UP[^>]*LOWER_UP[^>]*>'; }
 client_runtime_safe() {
   [ "$(stat -c %u:%g:%a /run/home-virtual-router/physical-simulation)" = 0:0:700 ] &&
+    [ "$(stat -c %u:%g:%a /run/home-virtual-router/physical-simulation/client-netns)" = 0:0:600 ] &&
     [ "$(stat -c %u:%g:%a /run/home-virtual-router/physical-simulation/dhclient.leases)" = 0:0:600 ] &&
     [ "$(stat -c %u:%g:%a /run/home-virtual-router/physical-simulation/dhclient.pid)" = 0:0:600 ]
 }
@@ -92,6 +104,23 @@ stop_simulation_dhclient() {
 dhcp_dora_ok() {
   local log=/run/home-virtual-router/physical-simulation/dhclient.log marker
   for marker in DHCPDISCOVER DHCPOFFER DHCPREQUEST DHCPACK; do grep -F "$marker" "$log" >/dev/null || return 1; done
+  ! grep -F DHCPDECLINE "$log" >/dev/null
+}
+report_dhcp_failure() {
+  echo 'DHCP failure diagnostic:' >&2
+  ip -n hvr-sim-client-ns -details link show dev hvr-sim-client >&2 || true
+  ip -n hvr-sim-client-ns -4 address show dev hvr-sim-client >&2 || true
+  ip -n hvr-sim-client-ns -4 route show >&2 || true
+  ip -n hvr-sim-client-ns neigh show >&2 || true
+  for setting in proxy_arp arp_ignore arp_announce arp_filter; do
+    printf 'net.ipv4.conf.all.%s=%s\n' "$setting" "$(sysctl -n "net.ipv4.conf.all.$setting" 2>/dev/null || echo unreadable)" >&2
+    printf 'net.ipv4.conf.hvr-sim-lan.%s=%s\n' "$setting" "$(sysctl -n "net.ipv4.conf.hvr-sim-lan.$setting" 2>/dev/null || echo unreadable)" >&2
+  done
+  echo 'dhclient log:' >&2; tail -n 40 /run/home-virtual-router/physical-simulation/dhclient.log >&2 || true
+  echo 'dhclient hook log:' >&2; cat /run/home-virtual-router/physical-simulation/dhclient-hook.log >&2 || true
+  echo 'dnsmasq leases:' >&2; cat "$DNSMASQ_LEASE_FILE" >&2 || true
+  echo 'dnsmasq log:' >&2; tail -n 40 "$DNSMASQ_LOG_FILE" >&2 || true
+  echo 'DHCP/ARP capture:' >&2; tail -n 80 /run/home-virtual-router/physical-simulation/dhcp-packets.log >&2 || true
 }
 dns_query_ok() { ip netns exec hvr-sim-client-ns dig +time=2 +tries=1 @10.0.0.1 example.test A +short | grep -F -x 192.0.2.123 >/dev/null; }
 ipfix_capture_ok() {
@@ -112,6 +141,7 @@ physical_runtime_absent() {
 cleanup() {
   set +e
   "$repo_dir/lab/scripts/runtime-stop.sh" >/dev/null 2>&1
+  [ -z "${dhcp_capture_pid:-}" ] || { kill "$dhcp_capture_pid" 2>/dev/null; wait "$dhcp_capture_pid" 2>/dev/null; }
   [ -z "${simulation_dhclient_pid:-}" ] || stop_simulation_dhclient "$simulation_dhclient_pid" "${simulation_dhclient_starttime:-}" 2>/dev/null
   [ ! -s /run/home-virtual-router/physical-simulation/upstream-dnsmasq.pid ] ||
     kill "$(cat /run/home-virtual-router/physical-simulation/upstream-dnsmasq.pid)" 2>/dev/null
@@ -138,6 +168,8 @@ case "$dhclient_source" in /sbin/dhclient|/usr/sbin/dhclient) ;; *) echo "error:
 install -o 0 -g 0 -m 0755 "$dhclient_source" /run/home-virtual-router/physical-simulation/dhclient
 install -o 0 -g 0 -m 0700 "$repo_dir/physical/scripts/simulation-dhclient-hook.sh" \
   /run/home-virtual-router/physical-simulation/dhclient-hook
+printf '%s\n' "$simulation_client_netns" > /run/home-virtual-router/physical-simulation/client-netns
+chmod 0600 /run/home-virtual-router/physical-simulation/client-netns
 install -o 0 -g 0 -m 0600 /dev/null /run/home-virtual-router/physical-simulation/dhclient.leases
 install -o 0 -g 0 -m 0600 /dev/null /run/home-virtual-router/physical-simulation/dhclient.pid
 cat > /run/home-virtual-router/physical-simulation/upstream-dnsmasq.conf <<'EOF'
@@ -169,6 +201,21 @@ check "simulated client interface exists" client_interface_exists
 check "simulated client link is up" client_interface_up
 check "simulated client runtime directory and files are private" client_runtime_safe
 check "simulated dhclient hook is executable" simulation_hook_executable
+check "simulated client has no stale IPv4 address" client_ipv4_clean
+check "simulated client has no stale default route" client_route_clean
+check "simulated client has no stale neighbor state" client_neighbor_clean
+check "DHCP pool is unused before acquisition" simulation_pool_unused
+timeout 20 ip netns exec hvr-sim-client-ns tcpdump -U -n -e -i hvr-sim-client -c 100 \
+  'arp or icmp or (udp port 67 or udp port 68)' \
+  >/run/home-virtual-router/physical-simulation/dhcp-packets.log 2>&1 &
+dhcp_capture_pid=$!
+dhcp_capture_ready=0
+for _attempt in {1..50}; do
+  grep -F 'listening on hvr-sim-client' /run/home-virtual-router/physical-simulation/dhcp-packets.log >/dev/null 2>&1 && { dhcp_capture_ready=1; break; }
+  kill -0 "$dhcp_capture_pid" 2>/dev/null || break
+  sleep 0.1
+done
+check "DHCP/ARP diagnostic capture readiness" test "$dhcp_capture_ready" -eq 1
 ip netns exec hvr-sim-client-ns env HVR_INTERNAL_PHYSICAL_SIMULATION=1 \
   /run/home-virtual-router/physical-simulation/dhclient -4 -d -v \
   -pf /run/home-virtual-router/physical-simulation/dhclient.pid \
@@ -196,13 +243,15 @@ for _attempt in {1..150}; do
   kill -0 "$simulation_dhclient_pid" 2>/dev/null || break
   sleep 0.1
 done
-[ "$lease_ready" -eq 1 ] || tail -n 40 /run/home-virtual-router/physical-simulation/dhclient.log >&2
+[ "$lease_ready" -eq 1 ] || report_dhcp_failure
 check "dynamic DHCP lease in 10.0.0.100-199/24" test "$lease_ready" -eq 1
 check "DHCP discover-offer-request-ack exchange" dhcp_dora_ok
 check "DHCP default gateway 10.0.0.1" dhcp_route_ok
 check "exact simulation dhclient termination" stop_simulation_dhclient "$simulation_dhclient_pid" "$simulation_dhclient_starttime"
 simulation_dhclient_pid=""
 simulation_dhclient_starttime=""
+kill "$dhcp_capture_pid" 2>/dev/null || true
+wait "$dhcp_capture_pid" 2>/dev/null || true
 check "DNS query through physical LAN" dns_query_ok
 client_ip="${client_address%/*}"
 wan_to_lan_blocked() { ! ip netns exec hvr-sim-upstream-ns ping -c 1 -W 1 "$client_ip" >/dev/null 2>&1; }
