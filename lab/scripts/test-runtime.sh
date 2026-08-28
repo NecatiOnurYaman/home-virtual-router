@@ -5,8 +5,9 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/runtime-common.sh"
 require_lab_environment
 require_root
-runtime_lock
 load_topology_config
+[ "$DEPLOYMENT_MODE" = lab ] || die "runtime-test is the namespace-lab acceptance; use physical-sim-test for R13"
+runtime_lock
 
 if [ -e "$RUNTIME_STATE_FILE" ]; then
   die "runtime-test requires a stopped R12 runtime; run make runtime-stop first"

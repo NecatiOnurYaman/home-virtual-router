@@ -9,13 +9,13 @@ import os
 import tempfile
 
 
-VERSION = "1"
+VERSION = "2"
 STAGES = (
     "topology", "routing", "nat", "firewall", "dhcp", "dns",
     "observability", "ipfix", "metrics-export",
 )
 STATUSES = {"starting", "running", "degraded", "stopping", "failed"}
-KEYS = ("VERSION", "PROFILE", "STATUS", "STARTED_AT", "OWNED_STAGES")
+KEYS = ("VERSION", "DEPLOYMENT_MODE", "PROFILE", "STATUS", "STARTED_AT", "OWNED_STAGES")
 
 
 class StateError(ValueError):
@@ -44,12 +44,15 @@ def rollback_order(stages: tuple[str, ...]) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class RuntimeState:
+    deployment_mode: str
     profile: str
     status: str
     started_at: str
     owned_stages: tuple[str, ...] = ()
 
     def validate(self) -> None:
+        if self.deployment_mode not in {"lab", "physical"}:
+            raise StateError(f"invalid deployment mode: {self.deployment_mode!r}")
         if self.profile not in {"lab", "observability"}:
             raise StateError(f"invalid profile: {self.profile!r}")
         if self.status not in STATUSES:
@@ -68,7 +71,7 @@ class RuntimeState:
     def render(self) -> str:
         self.validate()
         return (
-            f"VERSION={VERSION}\nPROFILE={self.profile}\nSTATUS={self.status}\n"
+            f"VERSION={VERSION}\nDEPLOYMENT_MODE={self.deployment_mode}\nPROFILE={self.profile}\nSTATUS={self.status}\n"
             f"STARTED_AT={self.started_at}\nOWNED_STAGES={','.join(self.owned_stages)}\n"
         )
 
@@ -84,12 +87,14 @@ def parse(text: str) -> RuntimeState:
         if key in values:
             raise StateError(f"duplicate key: {key!r}")
         values[key] = value
-    if set(values) != set(KEYS):
-        raise StateError("state file has missing keys")
-    if values["VERSION"] != VERSION:
+    version = values.get("VERSION")
+    expected = set(KEYS) if version == VERSION else set(KEYS) - {"DEPLOYMENT_MODE"}
+    if set(values) != expected:
+        raise StateError("state file has missing or unknown keys")
+    if version not in {"1", VERSION}:
         raise StateError(f"unsupported state version: {values['VERSION']!r}")
     owned = tuple(filter(None, values["OWNED_STAGES"].split(",")))
-    state = RuntimeState(values["PROFILE"], values["STATUS"], values["STARTED_AT"], owned)
+    state = RuntimeState(values.get("DEPLOYMENT_MODE", "lab"), values["PROFILE"], values["STATUS"], values["STARTED_AT"], owned)
     state.validate()
     return state
 
@@ -123,9 +128,10 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
     show = subparsers.add_parser("show")
     show.add_argument("path", type=Path)
-    show.add_argument("--field", choices=("profile", "status", "started-at", "owned", "rollback"))
+    show.add_argument("--field", choices=("deployment", "profile", "status", "started-at", "owned", "rollback"))
     write = subparsers.add_parser("write")
     write.add_argument("path", type=Path)
+    write.add_argument("deployment_mode")
     write.add_argument("profile")
     write.add_argument("status")
     write.add_argument("started_at")
@@ -144,7 +150,7 @@ def main() -> int:
     if args.command == "write":
         try:
             state = RuntimeState(
-                args.profile, args.status, args.started_at,
+                args.deployment_mode, args.profile, args.status, args.started_at,
                 tuple(filter(None, args.owned.split(","))),
             )
             write_atomic(args.path, state)
@@ -156,6 +162,7 @@ def main() -> int:
     except StateError as exc:
         parser.exit(2, f"runtime state error: {exc}\n")
     values = {
+        "deployment": state.deployment_mode,
         "profile": state.profile,
         "status": state.status,
         "started-at": state.started_at,

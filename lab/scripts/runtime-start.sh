@@ -3,11 +3,13 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=runtime-common.sh
 source "$script_dir/runtime-common.sh"
-require_lab_environment
+require_linux
 require_root
-runtime_lock
 load_topology_config
-validate_topology_names
+runtime_require_environment
+if [ "$DEPLOYMENT_MODE" = "physical" ]; then physical_preflight; fi
+runtime_lock
+[ "$DEPLOYMENT_MODE" = "physical" ] || validate_topology_names
 runtime_dependencies
 
 profile="$TELEMETRY_MODE"
@@ -19,6 +21,8 @@ existing_state=0
 if [ -e "$RUNTIME_STATE_FILE" ]; then
   existing_state=1
   existing_profile="$(runtime_state_field profile)" || die "malformed R12 state; inspect $RUNTIME_STATE_FILE"
+  existing_deployment="$(runtime_state_field deployment)"
+  [ "$existing_deployment" = "$DEPLOYMENT_MODE" ] || die "active runtime deployment is $existing_deployment, not configured $DEPLOYMENT_MODE"
   [ "$existing_profile" = "$profile" ] || die "runtime state profile $existing_profile conflicts with configured TELEMETRY_MODE=$profile; stop it before changing profiles"
   [ -r "$RUNTIME_CONFIG_SNAPSHOT" ] && cmp -s -- "$HVR_CONFIG" "$RUNTIME_CONFIG_SNAPSHOT" || die "configuration differs from the active runtime snapshot; restore it or stop before changing configuration"
   started_at="$(runtime_state_field started-at)"

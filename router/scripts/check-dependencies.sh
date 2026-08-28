@@ -38,6 +38,9 @@ for command_name in $commands; do
       timeout) package="coreutils" ;;
       tac) package="coreutils" ;;
       cmp) package="diffutils" ;;
+      stat) package="coreutils" ;;
+      find) package="findutils" ;;
+      sed) package="sed" ;;
       *) package="package providing $command_name" ;;
     esac
     printf '  missing %s (Ubuntu/Debian package: %s)\n' "$command_name" "$package"

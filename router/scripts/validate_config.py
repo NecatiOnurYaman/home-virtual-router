@@ -9,6 +9,10 @@ import sys
 from pathlib import Path
 
 REQUIRED = {
+    "DEPLOYMENT_MODE", "PHYSICAL_WAN_INTERFACE", "PHYSICAL_LAN_INTERFACE",
+    "PHYSICAL_TELEMETRY_INTERFACE", "PHYSICAL_WAN_ADDRESS",
+    "PHYSICAL_WAN_PREFIX_LENGTH", "PHYSICAL_WAN_GATEWAY",
+    "PHYSICAL_MANAGEMENT_INTERFACE_ACK",
     "UPSTREAM_SUBNET", "UPSTREAM_GATEWAY", "ROUTER_WAN", "LAN_SUBNET", "ROUTER_LAN",
     "CLIENT_ADDRESS", "UPSTREAM_NAMESPACE", "ROUTER_NAMESPACE", "CLIENT_NAMESPACE",
     "UPSTREAM_INTERFACE", "ROUTER_WAN_INTERFACE", "ROUTER_LAN_INTERFACE",
@@ -28,6 +32,7 @@ REQUIRED = {
 }
 LINE = re.compile(r"([A-Z][A-Z0-9_]*)=([^\s#]+)")
 NAME = re.compile(r"hvr-[a-z0-9_.-]+")
+INTERFACE = re.compile(r"[A-Za-z0-9_.-]{1,15}")
 
 
 def parse(path: Path) -> dict[str, str]:
@@ -50,6 +55,9 @@ def parse(path: Path) -> dict[str, str]:
 
 
 def validate(values: dict[str, str]) -> None:
+    deployment = values["DEPLOYMENT_MODE"]
+    if deployment not in {"lab", "physical"}:
+        raise ValueError("DEPLOYMENT_MODE must be lab or physical")
     upstream = ipaddress.ip_network(values["UPSTREAM_SUBNET"], strict=True)
     lan = ipaddress.ip_network(values["LAN_SUBNET"], strict=True)
     if lan.prefixlen != 24:
@@ -77,9 +85,9 @@ def validate(values: dict[str, str]) -> None:
         raise ValueError("DHCP_DNS_SERVER must be within LAN_SUBNET")
     if not re.fullmatch(r"[1-9][0-9]*[mhd]", values["DHCP_LEASE_TIME"]):
         raise ValueError("DHCP_LEASE_TIME must be a positive duration ending in m, h, or d")
-    if ipaddress.ip_address(values["DNS_UPSTREAM"]) not in upstream:
+    if deployment == "lab" and ipaddress.ip_address(values["DNS_UPSTREAM"]) not in upstream:
         raise ValueError("DNS_UPSTREAM must be within UPSTREAM_SUBNET")
-    if values["DNS_UPSTREAM"] != values["UPSTREAM_GATEWAY"]:
+    if deployment == "lab" and values["DNS_UPSTREAM"] != values["UPSTREAM_GATEWAY"]:
         raise ValueError("R7 DNS_UPSTREAM must be the isolated upstream namespace address")
     if not re.fullmatch(r"[1-9][0-9]{0,3}", values["DNS_CACHE_SIZE"]):
         raise ValueError("DNS_CACHE_SIZE must be between 1 and 9999")
@@ -108,20 +116,21 @@ def validate(values: dict[str, str]) -> None:
     if telemetry.overlaps(upstream) or telemetry.overlaps(lan):
         raise ValueError("TELEMETRY_SUBNET must not overlap the WAN or LAN")
     expected_collector = values["UPSTREAM_GATEWAY"] if values["TELEMETRY_MODE"] == "lab" else values["TELEMETRY_HOST_ADDRESS"]
-    if values["IPFIX_COLLECTOR_HOST"] != expected_collector:
+    if deployment == "lab" and values["IPFIX_COLLECTOR_HOST"] != expected_collector:
         raise ValueError(f"IPFIX_COLLECTOR_HOST must be {expected_collector} in {values['TELEMETRY_MODE']} mode")
     if not re.fullmatch(r"[1-9][0-9]{0,4}", values["IPFIX_COLLECTOR_PORT"]):
         raise ValueError("IPFIX_COLLECTOR_PORT must be between 1 and 65535")
     if int(values["IPFIX_COLLECTOR_PORT"]) > 65535:
         raise ValueError("IPFIX_COLLECTOR_PORT must be between 1 and 65535")
-    if values["IPFIX_CAPTURE_INTERFACE"] != values["ROUTER_LAN_INTERFACE"]:
+    expected_capture = values["ROUTER_LAN_INTERFACE"] if deployment == "lab" else values["PHYSICAL_LAN_INTERFACE"]
+    if values["IPFIX_CAPTURE_INTERFACE"] != expected_capture:
         raise ValueError("R8 must capture on the router LAN interface before NAT")
     if not re.fullmatch(r"[a-z][a-z0-9-]{0,62}", values["ROUTER_ID"]):
         raise ValueError("ROUTER_ID must be a lowercase DNS-label-like identifier")
     if values["METRICS_EXPORT_ENABLED"] not in {"0", "1"}:
         raise ValueError("METRICS_EXPORT_ENABLED must be 0 or 1")
     expected_metrics_host = values["UPSTREAM_GATEWAY"] if values["TELEMETRY_MODE"] == "lab" else values["TELEMETRY_HOST_ADDRESS"]
-    if values["METRICS_EXPORT_HOST"] != expected_metrics_host:
+    if deployment == "lab" and values["METRICS_EXPORT_HOST"] != expected_metrics_host:
         raise ValueError(f"METRICS_EXPORT_HOST must be {expected_metrics_host} in {values['TELEMETRY_MODE']} mode")
     if not re.fullmatch(r"[1-9][0-9]{0,4}", values["METRICS_EXPORT_PORT"]) or int(values["METRICS_EXPORT_PORT"]) > 65535:
         raise ValueError("METRICS_EXPORT_PORT must be between 1 and 65535")
@@ -158,6 +167,33 @@ def validate(values: dict[str, str]) -> None:
     for key in interface_keys:
         if len(values[key]) > 15:
             raise ValueError(f"{key} exceeds Linux IFNAMSIZ (15 visible characters)")
+    if deployment == "physical":
+        if values["TELEMETRY_MODE"] != "lab":
+            raise ValueError("R13 physical deployment supports TELEMETRY_MODE=lab only")
+        wan = values["PHYSICAL_WAN_INTERFACE"]
+        lan_if = values["PHYSICAL_LAN_INTERFACE"]
+        telemetry_if = values["PHYSICAL_TELEMETRY_INTERFACE"]
+        for key, value in (("PHYSICAL_WAN_INTERFACE", wan), ("PHYSICAL_LAN_INTERFACE", lan_if)):
+            if value in {"unset", "none", "lo"} or not INTERFACE.fullmatch(value):
+                raise ValueError(f"{key} must name an explicit non-loopback Linux interface")
+        if wan == lan_if:
+            raise ValueError("physical WAN and LAN interfaces must be different")
+        if telemetry_if != "none":
+            raise ValueError("R13 physical telemetry interface deployment is deferred; use none")
+        if values["PHYSICAL_MANAGEMENT_INTERFACE_ACK"] not in {"none", wan, lan_if}:
+            raise ValueError("PHYSICAL_MANAGEMENT_INTERFACE_ACK must be none or the exact WAN/LAN interface")
+        try:
+            prefix = int(values["PHYSICAL_WAN_PREFIX_LENGTH"])
+        except ValueError as error:
+            raise ValueError("PHYSICAL_WAN_PREFIX_LENGTH must be an integer") from error
+        if not 1 <= prefix <= 32:
+            raise ValueError("PHYSICAL_WAN_PREFIX_LENGTH must be between 1 and 32")
+        wan_network = ipaddress.ip_network(f"{values['PHYSICAL_WAN_ADDRESS']}/{prefix}", strict=False)
+        gateway = ipaddress.ip_address(values["PHYSICAL_WAN_GATEWAY"])
+        if gateway not in wan_network or gateway == ipaddress.ip_address(values["PHYSICAL_WAN_ADDRESS"]):
+            raise ValueError("PHYSICAL_WAN_GATEWAY must be a different address in the static WAN subnet")
+        if wan_network.overlaps(lan):
+            raise ValueError("physical WAN network must not overlap LAN_SUBNET")
 
 
 def main() -> int:

@@ -1,8 +1,9 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test systemd-show
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test systemd-show
 
 check:
-	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
+	@bash -n router/scripts/*.sh lab/scripts/*.sh physical/scripts/*.sh tests/*.sh
 	@python3 router/scripts/validate_config.py lab/config/defaults.env
+	@python3 router/scripts/validate_config.py config/physical.example.env
 
 test:
 	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -v
@@ -171,6 +172,14 @@ runtime-check:
 runtime-test:
 	@echo "Running the bounded R12 lifecycle acceptance requires root."
 	sudo lab/scripts/test-runtime.sh
+
+physical-check:
+	@echo "Running the read-only R13 physical deployment preflight requires root."
+	sudo physical/scripts/preflight.sh
+
+physical-sim-test:
+	@echo "Running R13 physical logic in isolated Linux namespaces requires root."
+	sudo physical/scripts/test-simulation.sh
 
 systemd-show:
 	@python3 router/scripts/render_systemd_unit.py "$(CURDIR)"

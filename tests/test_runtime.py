@@ -16,23 +16,28 @@ from router.runtime.state import (
 
 class RuntimeStateTests(unittest.TestCase):
     def test_round_trip_is_deterministic(self) -> None:
-        state = RuntimeState("lab", "running", "2026-08-28T10:00:00Z", ("topology", "routing", "nat"))
+        state = RuntimeState("lab", "lab", "running", "2026-08-28T10:00:00Z", ("topology", "routing", "nat"))
         self.assertEqual(parse(state.render()), state)
-        self.assertEqual(state.render().splitlines()[0], "VERSION=1")
+        self.assertEqual(state.render().splitlines()[0], "VERSION=2")
 
     def test_atomic_write_and_read(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "runtime" / "state.env"
-            state = RuntimeState("observability", "starting", "2026-08-28T10:00:00Z", ("topology",))
+            state = RuntimeState("physical", "lab", "starting", "2026-08-28T10:00:00Z", ("topology",))
             write_atomic(path, state)
             self.assertEqual(read(path), state)
+            self.assertEqual(read(path).deployment_mode, "physical")
             self.assertEqual(path.stat().st_mode & 0o777, 0o640)
 
+    def test_version_one_lab_state_remains_readable(self) -> None:
+        legacy = "VERSION=1\nPROFILE=lab\nSTATUS=running\nSTARTED_AT=now\nOWNED_STAGES=topology\n"
+        self.assertEqual(parse(legacy).deployment_mode, "lab")
+
     def test_rejects_malformed_duplicate_and_unknown_data(self) -> None:
-        valid = RuntimeState("lab", "running", "now", ()).render()
+        valid = RuntimeState("lab", "lab", "running", "now", ()).render()
         cases = (
             valid + "STATUS=running\n",
-            valid.replace("VERSION=1", "VERSION=2"),
+            valid.replace("VERSION=2", "VERSION=3"),
             valid.replace("PROFILE=lab", "PROFILE=production"),
             valid.replace("OWNED_STAGES=", "OWNED_STAGES=routing,topology"),
             valid + "SURPRISE=value\n",
@@ -42,7 +47,7 @@ class RuntimeStateTests(unittest.TestCase):
                 parse(text)
 
     def test_rollback_order_is_reverse_ownership_order(self) -> None:
-        state = RuntimeState("lab", "failed", "now", ("topology", "routing", "nat", "firewall"))
+        state = RuntimeState("lab", "lab", "failed", "now", ("topology", "routing", "nat", "firewall"))
         self.assertEqual(rollback_order(state.owned_stages), ("firewall", "nat", "routing", "topology"))
 
     def test_desired_stages_follow_existing_profile_and_enable_flags(self) -> None:

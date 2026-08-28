@@ -1,8 +1,7 @@
 [Unit]
-Description=Home Virtual Router lab runtime
+Description=Home Virtual Router runtime
 Documentation=file://@HVR_REPO_DIR@/docs/runtime.md
 After=network.target
-ConditionPathExists=/etc/home-virtual-router-lab
 
 [Service]
 Type=oneshot

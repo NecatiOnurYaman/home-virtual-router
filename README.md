@@ -4,7 +4,7 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository is at **Stage R12: router runtime hardening**. R12 provides an ownership-aware, idempotent lifecycle for the validated R2–R11 lab stack. R9 observability integration and the individual stage commands remain unchanged. Router management, anomaly detection, SNMP, physical deployment, production service packaging, and IPv6 stages are not enabled.
+The repository is at **Stage R13: physical router deployment**. R13 maps the proven semantic WAN/LAN roles to explicitly configured dedicated Linux NICs while preserving the R2–R12 namespace lab. Actual hardware acceptance remains R14 and has not been performed. Router management, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
 
 Development happens inside a dedicated Ubuntu 26.04 LTS virtual machine running under UTM on macOS. The namespace lab stays inside that VM without changing macOS networking or the VM's normal UTM-facing interface and default route.
 
@@ -43,6 +43,8 @@ make lab-destroy
 The lab targets clearly invoke `sudo`. DHCP disable restores the earlier static client state for staged teardown. Missing dependencies, including `dhclient`, are reported but never installed automatically. See `docs/development-lab.md` for lifecycle and safety details.
 
 For the complete runtime, use `make runtime-start`, `runtime-status`, `runtime-check`, `runtime-restart`, and `runtime-stop`. R12 starts only missing stages, validates healthy existing stages, rejects conflicting partial state, and removes only stages recorded as runtime-owned. `make runtime-test` proves bounded double-start/double-stop behavior from an absent Ubuntu lab baseline. State and diagnostics are under `/run/home-virtual-router/runtime/`; see `docs/runtime.md` for rollback, degraded-state, reboot, and optional systemd-template details.
+
+The tracked default remains `DEPLOYMENT_MODE=lab`. Physical mode is selected only by a complete, root-owned `/etc/home-virtual-router/router.env` based on `config/physical.example.env`, plus the separately created `/etc/home-virtual-router/allow-physical-deployment` authorization marker. Run `sudo make physical-check` before any physical start. Never first deploy over SSH on a configured WAN/LAN NIC unless losing that session is deliberate and the exact interface acknowledgement is set. See `docs/physical-deployment.md`.
 
 ## Observability integration
 

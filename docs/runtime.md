@@ -1,6 +1,6 @@
 # R12 runtime orchestration
 
-R12 adds one high-level lifecycle around the validated R2–R11 stage commands. It does not replace those commands, change `lab/config/defaults.env`, install a service, or add physical-router behavior.
+R12 adds one high-level lifecycle around the validated R2–R11 stage commands. R13 extends its topology/stage dispatch for `DEPLOYMENT_MODE=physical`; `DEPLOYMENT_MODE=lab` remains the tracked default and retains the validated namespace commands.
 
 ## Lifecycle
 
@@ -8,6 +8,8 @@ Use `make runtime-start`, `runtime-status`, `runtime-check`, `runtime-restart`, 
 
 - `lab` sends IPFIX and metrics to `hvr-upstream` and creates no host telemetry veth.
 - `observability` creates the R9 `hvr-obs-host`/`hvr-observe` link before starting exporters.
+
+`DEPLOYMENT_MODE` is independent: lab executes router commands in `hvr-router`; physical executes exact project operations in the host network namespace against configured NICs. R13 physical mode accepts `TELEMETRY_MODE=lab` only; the namespace-specific R9 observability veth is never created on a physical host.
 
 `IPFIX_ENABLED` and `METRICS_EXPORT_ENABLED` continue to control their exporters. An unreachable receiver does not stop the core router: exporters remain locally healthy and log delivery failures. A missing or identity-invalid local exporter is degraded or inconsistent.
 
@@ -43,7 +45,7 @@ The first command removes only R12-owned stages; the remaining commands dismantl
 
 ## Runtime diagnostics
 
-R12 owns only `/run/home-virtual-router/runtime/`: `state.env`, `profile`, `started-at`, `config.snapshot`, `startup.log`, `last-error`, and the advisory `lock`. The strict state contains the profile, lifecycle status, UTC start time, and ordered ownership list. The lock is an operation mutex: a `flock --close` wrapper holds it for the complete lifecycle transaction without passing its descriptor to persistent router processes. These files and the namespaces are volatile and may disappear at reboot. Absence of both is cleanly stopped; malformed state, a profile mismatch, or a changed configuration snapshot is never sourced and blocks destructive teardown. Restore the recorded configuration before stopping an active runtime, then make the intended configuration change while stopped.
+R12 owns only `/run/home-virtual-router/runtime/`: `state.env`, `profile`, `started-at`, `config.snapshot`, `startup.log`, `last-error`, and the advisory `lock`. Version-2 state adds deployment mode; version-1 lab state remains readable. The lock remains a complete-transaction operation mutex. Physical identity is additionally recorded in `/run/home-virtual-router/physical/interface-map.env`, while the startup config snapshot binds teardown to the exact NIC mapping. Missing or changed snapshots block teardown rather than selecting newly configured NICs.
 
 Status reports `running`, `stopped`, `degraded`, or `inconsistent` plus each desired subsystem. Check succeeds only for `running`. The core path is topology through DNS. IPFIX, the observability link, and metrics export are telemetry subsystems; absence degrades an otherwise healthy router, while conflicting identity or core damage is inconsistent.
 
@@ -56,4 +58,4 @@ make systemd-show > /tmp/home-virtual-router.service
 systemd-analyze verify /tmp/home-virtual-router.service
 ```
 
-Installation under `/etc/systemd/system/`, enablement, and startup remain explicit operator actions. The unit retains the lab marker guard and calls the same ownership-aware lifecycle scripts.
+Installation under `/etc/systemd/system/`, enablement, and startup remain explicit operator actions. The unit calls the same deployment-aware lifecycle scripts; those scripts enforce either the lab marker or the stronger physical config/authorization gates.

@@ -3,18 +3,21 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=runtime-common.sh
 source "$script_dir/runtime-common.sh"
-require_lab_environment
+require_linux
 require_root
-runtime_lock
 load_topology_config
+runtime_require_environment
+runtime_lock
 if [ ! -e "$RUNTIME_STATE_FILE" ]; then
   echo "HVR runtime has no owned state; manual stage state was not changed."
   exit 0
 fi
 profile="$(runtime_state_field profile)" || die "malformed R12 state; refusing teardown"
+deployment="$(runtime_state_field deployment)"
 started_at="$(runtime_state_field started-at)"
 owned="$(runtime_state_field owned)"
 [ "$profile" = "$TELEMETRY_MODE" ] || die "runtime state profile $profile conflicts with configured TELEMETRY_MODE=$TELEMETRY_MODE"
+[ "$deployment" = "$DEPLOYMENT_MODE" ] || die "runtime state deployment $deployment conflicts with configured DEPLOYMENT_MODE=$DEPLOYMENT_MODE"
 [ -r "$RUNTIME_CONFIG_SNAPSHOT" ] && cmp -s -- "$HVR_CONFIG" "$RUNTIME_CONFIG_SNAPSHOT" || die "configuration differs from the active runtime snapshot; restore it before safe teardown"
 runtime_write_state "$profile" stopping "$started_at" "$owned"
 while IFS= read -r stage; do

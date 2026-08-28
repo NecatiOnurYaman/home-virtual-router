@@ -2,6 +2,8 @@
 
 Stage R12 adds `make runtime-start`, `runtime-status`, `runtime-check`, `runtime-restart`, `runtime-stop`, and the bounded clean-baseline `make runtime-test`. These orchestrate the manual stage commands below without replacing them. Ownership, rollback, degraded telemetry behavior, volatile state, and the optional uninstalled systemd template are documented in `docs/runtime.md`.
 
+R13 does not change this namespace topology. The tracked configuration explicitly sets `DEPLOYMENT_MODE=lab`; the physical simulation uses separate mount, network, and PID namespaces and is not R14 validation. A machine-local `/etc/home-virtual-router/router.env`, if present, deliberately takes precedence, so do not leave a physical configuration on a development-lab VM when running the ordinary lab acceptance.
+
 The project uses the existing dedicated Ubuntu 26.04 LTS (`resolute`) virtual machine running under UTM on macOS. Ubuntu supplies the Linux kernel required by namespaces. UTM and the Ubuntu VM are not managed by this repository.
 
 The Ubuntu VM hosts the isolated namespace lab; it is not itself part of the simulated router topology:

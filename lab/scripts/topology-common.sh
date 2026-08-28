@@ -4,7 +4,12 @@
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly HVR_REPO_DIR="$(cd "$script_dir/../.." && pwd)"
-readonly HVR_CONFIG="$HVR_REPO_DIR/lab/config/defaults.env"
+readonly HVR_LOCAL_CONFIG="/etc/home-virtual-router/router.env"
+if [ -f "$HVR_LOCAL_CONFIG" ]; then
+  readonly HVR_CONFIG="$HVR_LOCAL_CONFIG"
+else
+  readonly HVR_CONFIG="$HVR_REPO_DIR/lab/config/defaults.env"
+fi
 readonly HVR_VALIDATOR="$HVR_REPO_DIR/router/scripts/validate_config.py"
 readonly DHCP_RUNTIME_DIR="/run/home-virtual-router/dhcp"
 readonly DNSMASQ_CONFIG_TEMPLATE="$HVR_REPO_DIR/router/config/dnsmasq-dhcp.conf.template"
@@ -59,6 +64,14 @@ readonly METRICS_EXPORTER="$HVR_REPO_DIR/router/scripts/export_metrics.py"
 readonly METRICS_TEST_RECEIVER="$HVR_REPO_DIR/router/scripts/metrics_test_receiver.py"
 
 # These variables are populated only from an allowlist after Python validation.
+DEPLOYMENT_MODE=""
+PHYSICAL_WAN_INTERFACE=""
+PHYSICAL_LAN_INTERFACE=""
+PHYSICAL_TELEMETRY_INTERFACE=""
+PHYSICAL_WAN_ADDRESS=""
+PHYSICAL_WAN_PREFIX_LENGTH=""
+PHYSICAL_WAN_GATEWAY=""
+PHYSICAL_MANAGEMENT_INTERFACE_ACK=""
 UPSTREAM_SUBNET=""
 UPSTREAM_GATEWAY=""
 ROUTER_WAN=""
@@ -110,6 +123,14 @@ load_topology_config() {
   python3 "$HVR_VALIDATOR" "$HVR_CONFIG" >/dev/null
   while IFS='=' read -r key value; do
     case "$key" in
+      DEPLOYMENT_MODE) DEPLOYMENT_MODE="$value" ;;
+      PHYSICAL_WAN_INTERFACE) PHYSICAL_WAN_INTERFACE="$value" ;;
+      PHYSICAL_LAN_INTERFACE) PHYSICAL_LAN_INTERFACE="$value" ;;
+      PHYSICAL_TELEMETRY_INTERFACE) PHYSICAL_TELEMETRY_INTERFACE="$value" ;;
+      PHYSICAL_WAN_ADDRESS) PHYSICAL_WAN_ADDRESS="$value" ;;
+      PHYSICAL_WAN_PREFIX_LENGTH) PHYSICAL_WAN_PREFIX_LENGTH="$value" ;;
+      PHYSICAL_WAN_GATEWAY) PHYSICAL_WAN_GATEWAY="$value" ;;
+      PHYSICAL_MANAGEMENT_INTERFACE_ACK) PHYSICAL_MANAGEMENT_INTERFACE_ACK="$value" ;;
       UPSTREAM_SUBNET) UPSTREAM_SUBNET="$value" ;;
       UPSTREAM_GATEWAY) UPSTREAM_GATEWAY="$value" ;;
       ROUTER_WAN) ROUTER_WAN="$value" ;;
@@ -156,6 +177,10 @@ load_topology_config() {
       METRICS_EXPORT_TIMEOUT_SECONDS) METRICS_EXPORT_TIMEOUT_SECONDS="$value" ;;
     esac
   done < "$HVR_CONFIG"
+  if [ "$DEPLOYMENT_MODE" = "physical" ]; then
+    ROUTER_WAN_INTERFACE="$PHYSICAL_WAN_INTERFACE"
+    ROUTER_LAN_INTERFACE="$PHYSICAL_LAN_INTERFACE"
+  fi
 }
 
 require_root() {
@@ -322,7 +347,7 @@ verify_snapshot_unchanged() {
 }
 
 router_nft() {
-  ip netns exec "$ROUTER_NAMESPACE" nft "$@"
+  if [ "$DEPLOYMENT_MODE" = "physical" ]; then nft "$@"; else ip netns exec "$ROUTER_NAMESPACE" nft "$@"; fi
 }
 
 nat_table_exists() {
@@ -683,7 +708,11 @@ process_is_pmacctd() {
 process_is_in_router_namespace() {
   local pid="$1" process_netns router_netns
   process_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null)" || return 1
-  router_netns="$(ip netns exec "$ROUTER_NAMESPACE" readlink /proc/self/ns/net 2>/dev/null)" || return 1
+  if [ "$DEPLOYMENT_MODE" = "physical" ]; then
+    router_netns="$(readlink /proc/self/ns/net 2>/dev/null)" || return 1
+  else
+    router_netns="$(ip netns exec "$ROUTER_NAMESPACE" readlink /proc/self/ns/net 2>/dev/null)" || return 1
+  fi
   [ "$process_netns" = "$router_netns" ]
 }
 
@@ -769,6 +798,9 @@ assert_single_project_pmacct_pair() {
   plugin_pid="$(project_nfprobe_pids "$core_pid")"
   [ "$(printf '%s\n' "$plugin_pid" | awk 'NF {count++} END {print count+0}')" -eq 1 ] ||
     die "expected exactly one nfprobe child for project pmacct core $core_pid"
+  if [ "$DEPLOYMENT_MODE" = "physical" ]; then
+    return 0
+  fi
   for pid in $(ip netns pids "$ROUTER_NAMESPACE" 2>/dev/null || true); do
     process_is_pmacctd "$pid" || continue
     found="$found $pid"
