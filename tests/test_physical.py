@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 
 
@@ -13,6 +14,7 @@ PHYSICAL_STAGE = ROOT / "physical/scripts/physical-stage.sh"
 SIMULATION = ROOT / "physical/scripts/test-simulation.sh"
 SIMULATION_INNER = ROOT / "physical/scripts/test-simulation-inner.sh"
 TOPOLOGY_COMMON = ROOT / "lab/scripts/topology-common.sh"
+RUNTIME_START = ROOT / "lab/scripts/runtime-start.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config_physical", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
@@ -116,6 +118,63 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertNotIn("killall", harness + inner)
         for interface in ("hvr-sim-wan", "hvr-sim-up", "hvr-sim-lan", "hvr-sim-client"):
             self.assertIn(interface, harness + inner)
+
+    def test_physical_dhcp_runtime_is_prepared_before_rendering(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        self.assertIn('install -d -o 0 -g 0 -m 0755 "$DHCP_RUNTIME_DIR"', common)
+        enable = "physical_dhcp_enable() { resolve_dnsmasq_identity; physical_prepare_dhcp_runtime; render_dnsmasq_config; physical_start_dnsmasq; }"
+        self.assertIn(enable, common)
+        self.assertLess(common.index("physical_prepare_dhcp_runtime; render_dnsmasq_config"), common.index("physical_start_dnsmasq; }"))
+
+    def test_startup_failure_captures_status_before_message_and_rolls_back_reverse(self) -> None:
+        start = RUNTIME_START.read_text(encoding="utf-8")
+        self.assertIn('local status="$?" stage code message', start)
+        self.assertIn('message="runtime startup failed at $current_stage with exit status $status"', start)
+        self.assertNotIn("status: unbound variable", start)
+        self.assertIn("runtime startup failed at $current_stage", start)
+        self.assertIn("printf '%s\\n' \"$started_now\" | tac", start)
+        self.assertIn('runtime_write_state "$profile" failed', start)
+        self.assertIn('exit "$status"', start)
+
+        function = start[start.index("rollback() {"):start.index("\ntrap rollback EXIT")]
+        with tempfile.TemporaryDirectory() as directory:
+            trace = Path(directory) / "trace"
+            log = Path(directory) / "startup.log"
+            error = Path(directory) / "last-error"
+            harness = f'''set -euo pipefail
+current_stage=dhcp
+started_now=$'topology\nrouting\nnat\nfirewall'
+owned=topology,routing,nat,firewall
+profile=lab
+started_at=now
+RUNTIME_LOG_FILE={log}
+RUNTIME_ERROR_FILE={error}
+exec 3>>{trace}
+runtime_stage_state() {{ return 0; }}
+runtime_disable_stage() {{ printf '%s\n' "$1" >&3; }}
+runtime_remove_owned() {{ printf '%s' "$1"; }}
+runtime_write_state() {{ printf 'state:%s\n' "$2" >&3; }}
+tac() {{ awk '{{ lines[NR]=$0 }} END {{ for (i=NR; i>=1; i--) print lines[i] }}'; }}
+{function}
+trap rollback EXIT
+false
+'''
+            result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("unbound variable", result.stderr)
+            self.assertIn("runtime startup failed at dhcp with exit status 1", result.stderr)
+            self.assertEqual(trace.read_text(encoding="utf-8").splitlines(), ["firewall", "nat", "routing", "topology", "state:failed"])
+            self.assertIn("failed at dhcp", error.read_text(encoding="utf-8"))
+
+    def test_simulation_exercises_functional_physical_lifecycle(self) -> None:
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        for proof in (
+            "dhclient -4 -1", "client_address=", "route show default",
+            "tcpdump", "ping -c 2", "dig +time=2", "nft list table ip hvr-nat",
+            "nft list table inet hvr-filter", "pmacctd.conf", "show-metrics.sh",
+            "runtime-status.sh", "runtime-check.sh",
+        ):
+            self.assertIn(proof, inner)
 
     def test_host_execution_and_exact_owned_objects(self) -> None:
         topology = TOPOLOGY_COMMON.read_text(encoding="utf-8")

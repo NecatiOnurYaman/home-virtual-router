@@ -50,13 +50,15 @@ Teardown order is metrics, IPFIX, DNS, DHCP, firewall, NAT, forwarding restorati
 
 ## Simulation, first deployment, and recovery
 
-The Linux-only simulation requires root and `unshare`. It generates an ephemeral config under a private temporary directory and uses private mount/network/PID namespaces with test-only veths. It neither reads nor creates `/etc/home-virtual-router` or the production authorization marker. The internal config selector fails unless both the mount and network namespace differ from the invoking host:
+The Linux-only simulation requires root and `unshare`. It generates an ephemeral config under a private temporary directory and uses private mount/network/PID namespaces with test-only veths and nested client/upstream namespaces. It neither reads nor creates `/etc/home-virtual-router` or the production authorization marker. The internal config selector fails unless both the mount and network namespace differ from the invoking host:
 
 ```sh
 sudo make physical-sim-test
 ```
 
-It proves cold start, repeated start, health, repeated stop, and restoration without real NICs. It is not R14.
+It proves cold start, exact physical addresses/routes/forwarding/nftables state, a real dynamic client lease, routed/NAT-observed ICMP, LAN-only DNS with a bounded query, LAN-side IPFIX configuration/process health, physical LAN/WAN metric identity, metrics-exporter health, repeated start/status/check, repeated stop, and restoration without real NICs. The temporary upstream DNS helper, DHCP client, namespaces, and files are allowlisted and removed on success or failure. It is not R14.
+
+Physical runtime paths are initialized by their owning stage rather than by lab R2 side effects. The runtime orchestrator owns `/run/home-virtual-router/runtime` at `0750`; physical topology/routing owns `physical` at `0750`; physical DHCP prepares `dhcp` as root-owned `0755` before rendering dnsmasq configuration; DNS owns `dns` at `0755`; IPFIX owns `ipfix` at `0750`; and R11 owns `metrics-export`. Stage teardown removes only its known files and removes an empty directory where its existing lifecycle supports that operation.
 
 For first hardware work, keep systemd disabled, use a local console, prepare dedicated unmanaged NICs, install/edit config, create the marker, then run:
 

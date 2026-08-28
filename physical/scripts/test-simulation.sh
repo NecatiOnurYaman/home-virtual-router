@@ -10,6 +10,9 @@ trap cleanup EXIT
 sed -e 's/^PHYSICAL_WAN_INTERFACE=.*/PHYSICAL_WAN_INTERFACE=hvr-sim-wan/' \
   -e 's/^PHYSICAL_LAN_INTERFACE=.*/PHYSICAL_LAN_INTERFACE=hvr-sim-lan/' \
   -e 's/^IPFIX_CAPTURE_INTERFACE=.*/IPFIX_CAPTURE_INTERFACE=hvr-sim-lan/' \
+  -e 's/^DNS_UPSTREAM=.*/DNS_UPSTREAM=203.0.113.1/' \
+  -e 's/^IPFIX_COLLECTOR_HOST=.*/IPFIX_COLLECTOR_HOST=203.0.113.1/' \
+  -e 's/^METRICS_EXPORT_HOST=.*/METRICS_EXPORT_HOST=203.0.113.1/' \
   "$repo_dir/config/physical.example.env" > "$temporary/router.env"
 outer_net_namespace="$(readlink /proc/self/ns/net)"
 outer_mount_namespace="$(readlink /proc/self/ns/mnt)"

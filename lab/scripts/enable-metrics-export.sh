@@ -7,7 +7,9 @@ require_root
 load_topology_config
 [ "$METRICS_EXPORT_ENABLED" = "1" ] || die "metrics export is disabled by configuration"
 if [ "$DEPLOYMENT_MODE" = "physical" ]; then
-  [ -f /etc/home-virtual-router/allow-physical-deployment ] || die "physical deployment is not authorized on this host"
+  # shellcheck source=../../physical/scripts/physical-common.sh
+  source "$script_dir/../../physical/scripts/physical-common.sh"
+  require_physical_authorization
   ip link show dev "$ROUTER_LAN_INTERFACE" >/dev/null || die "physical LAN interface is absent"
   ip link show dev "$ROUTER_WAN_INTERFACE" >/dev/null || die "physical WAN interface is absent"
 else

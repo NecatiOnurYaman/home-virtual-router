@@ -14,7 +14,9 @@ load_topology_config
 command -v ip >/dev/null 2>&1 || die "iproute2 is required"
 command -v python3 >/dev/null 2>&1 || die "Python 3 is required"
 if [ "$DEPLOYMENT_MODE" = "physical" ]; then
-  [ -f /etc/home-virtual-router/allow-physical-deployment ] || die "physical deployment is not authorized on this host"
+  # shellcheck source=../../physical/scripts/physical-common.sh
+  source "$script_dir/../../physical/scripts/physical-common.sh"
+  require_physical_authorization
   ip link show dev "$ROUTER_WAN_INTERFACE" >/dev/null 2>&1 || die "configured WAN interface is absent: $ROUTER_WAN_INTERFACE"
   ip link show dev "$ROUTER_LAN_INTERFACE" >/dev/null 2>&1 || die "configured LAN interface is absent: $ROUTER_LAN_INTERFACE"
   command=(env PYTHONPATH="$HVR_REPO_DIR" python3 "$HVR_REPO_DIR/router/scripts/collect_metrics.py" --interface "lan=$ROUTER_LAN_INTERFACE" --interface "wan=$ROUTER_WAN_INTERFACE")

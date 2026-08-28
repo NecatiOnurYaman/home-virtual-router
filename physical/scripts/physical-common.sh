@@ -174,9 +174,15 @@ physical_routing_disable() {
 physical_dhcp_healthy() { dnsmasq_dhcp_running && grep -F -x 'port=0' "$DNSMASQ_CONFIG" >/dev/null 2>&1; }
 physical_dns_healthy() { dnsmasq_dhcp_running && [ -e "$DNS_ENABLED_FILE" ] && grep -F -x 'port=53' "$DNSMASQ_CONFIG" >/dev/null 2>&1 && grep -F -x "interface=$PHYSICAL_LAN_INTERFACE" "$DNSMASQ_CONFIG" >/dev/null 2>&1; }
 
+physical_prepare_dhcp_runtime() {
+  install -d -o 0 -g 0 -m 0755 "$DHCP_RUNTIME_DIR"
+  [ "$(stat -c %u:%g:%a "$DHCP_RUNTIME_DIR")" = "0:0:755" ] ||
+    die "physical DHCP runtime directory has unexpected ownership or permissions"
+}
+
 physical_start_dnsmasq() {
   resolve_dnsmasq_identity
-  mkdir -p "$DHCP_RUNTIME_DIR"
+  physical_prepare_dhcp_runtime
   touch "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE"
   chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE"
   dnsmasq --test --conf-file="$DNSMASQ_CONFIG" >/dev/null
@@ -184,7 +190,7 @@ physical_start_dnsmasq() {
   dnsmasq_dhcp_running || die "physical dnsmasq did not remain running"
 }
 
-physical_dhcp_enable() { resolve_dnsmasq_identity; render_dnsmasq_config; physical_start_dnsmasq; }
+physical_dhcp_enable() { resolve_dnsmasq_identity; physical_prepare_dhcp_runtime; render_dnsmasq_config; physical_start_dnsmasq; }
 physical_dhcp_disable() {
   [ ! -e "$DNS_ENABLED_FILE" ] || die "disable physical DNS before DHCP"
   stop_project_process_if_present "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"

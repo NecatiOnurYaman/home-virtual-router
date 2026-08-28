@@ -36,7 +36,8 @@ fi
 rm -f -- "$RUNTIME_ERROR_FILE"
 
 rollback() {
-  local status=$? stage code message="runtime startup failed at $current_stage with exit status $status"
+  local status="$?" stage code message
+  message="runtime startup failed at $current_stage with exit status $status"
   trap - EXIT INT TERM
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" | tee -a "$RUNTIME_LOG_FILE" >&2
   printf '%s\n' "$message" > "$RUNTIME_ERROR_FILE"
