@@ -170,11 +170,33 @@ false
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
         for proof in (
             "dhclient -4 -1", "client_address=", "route show default",
-            "tcpdump", "ping -c 2", "dig +time=2", "nft list table ip hvr-nat",
-            "nft list table inet hvr-filter", "pmacctd.conf", "show-metrics.sh",
+            "tcpdump", "ping -c 2", "dig +time=2", "nat_rule_exists",
+            "filter_rules_exist", "IPFIX_CONFIG_FILE", "show-metrics.sh",
             "runtime-status.sh", "runtime-check.sh",
         ):
             self.assertIn(proof, inner)
+        for diagnostic in (
+            "physical WAN address", "physical LAN address", "physical default route",
+            "IPv4 forwarding", "exact HVR NAT masquerade rule",
+            "complete R5 forwarding firewall rule set", "dynamic DHCP lease",
+            "DHCP default gateway", "DNS query", "routed client ICMP",
+            "upstream observed NAT source", "IPFIX process and LAN-side capture",
+            "metrics LAN role", "metrics WAN role", "metrics exporter process identity",
+            "repeated runtime-start", "runtime-status reports physical deployment",
+            "runtime-check", "first runtime-stop", "second runtime-stop",
+            "runtime-owned physical teardown",
+        ):
+            self.assertIn(diagnostic, inner)
+        self.assertIn("R13 physical simulation acceptance passed", inner)
+
+    def test_runtime_output_distinguishes_deployment_from_telemetry(self) -> None:
+        start = RUNTIME_START.read_text(encoding="utf-8")
+        self.assertIn("Deployment mode: %s", start)
+        self.assertIn("Telemetry mode: %s", start)
+        self.assertNotIn("runtime is running in %s mode", start)
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        self.assertIn("runtime deployment state is physical", inner)
+        self.assertIn("--field deployment", inner)
 
     def test_host_execution_and_exact_owned_objects(self) -> None:
         topology = TOPOLOGY_COMMON.read_text(encoding="utf-8")

@@ -11,6 +11,39 @@ export HVR_INTERNAL_PHYSICAL_SIMULATION=1
 export HVR_INTERNAL_SIMULATION_CONFIG="$simulation_config"
 export HVR_INTERNAL_OUTER_NET_NAMESPACE="$outer_net_namespace"
 export HVR_INTERNAL_OUTER_MOUNT_NAMESPACE="$outer_mount_namespace"
+check() {
+  local label="$1"
+  shift
+  printf 'CHECK: %s ... ' "$label"
+  if "$@"; then echo PASS; else echo FAIL >&2; echo "error: R13 physical simulation check failed: $label" >&2; return 1; fi
+}
+wan_address_ok() { ip -o -4 address show dev hvr-sim-wan | awk '{print $4}' | grep -F -x '203.0.113.2/24' >/dev/null; }
+lan_address_ok() { ip -o -4 address show dev hvr-sim-lan | awk '{print $4}' | grep -F -x '10.0.0.1/24' >/dev/null; }
+default_route_ok() { ip -o -4 route show default | grep -E '^default via 203\.0\.113\.1 dev hvr-sim-wan([[:space:]]|$)' >/dev/null; }
+forwarding_ok() { [ "$(sysctl -n net.ipv4.ip_forward)" = 1 ]; }
+runtime_state_physical() { [ "$(python3 "$repo_dir/router/runtime/state.py" show /run/home-virtual-router/runtime/state.env --field deployment)" = physical ]; }
+dhcp_lease_ok() {
+  client_address="$(ip -n hvr-sim-client-ns -o -4 address show dev hvr-sim-client scope global | awk '{print $4}')"
+  case "$client_address" in 10.0.0.1??/24) ;; *) return 1 ;; esac
+  [ "$client_address" != 10.0.0.10/24 ]
+}
+dhcp_route_ok() { ip -n hvr-sim-client-ns route show default | grep -E '^default via 10\.0\.0\.1 dev hvr-sim-client([[:space:]]|$)' >/dev/null; }
+dns_query_ok() { ip netns exec hvr-sim-client-ns dig +time=2 +tries=1 @10.0.0.1 example.test A +short | grep -F -x 192.0.2.123 >/dev/null; }
+ipfix_capture_ok() {
+  pmacctd_running && assert_single_project_pmacct_pair >/dev/null 2>&1 &&
+    grep -F -x 'interface=hvr-sim-lan' "$IPFIX_CONFIG_FILE" >/dev/null &&
+    grep -F -x 'nfprobe_version[hvr]: 10' "$IPFIX_CONFIG_FILE" >/dev/null
+}
+metrics_role_ok() {
+  "$repo_dir/lab/scripts/show-metrics.sh" |
+    python3 -c 'import json,sys; role,name=sys.argv[1:]; d=json.load(sys.stdin); m=d["router"]["metrics"]; pairs={(x["interface"]["role"],x["interface"]["name"]) for x in m if "interface" in x}; assert (role,name) in pairs' "$1" "$2"
+}
+runtime_status_physical() { "$repo_dir/lab/scripts/runtime-status.sh" | grep -F -x 'Recorded deployment: physical' >/dev/null; }
+physical_runtime_absent() {
+  ! physical_address_exists hvr-sim-wan 203.0.113.2/24 &&
+    ! physical_address_exists hvr-sim-lan 10.0.0.1/24 &&
+    ! nat_table_exists && ! filter_table_exists && [ ! -e "$RUNTIME_STATE_FILE" ]
+}
 cleanup() {
   set +e
   "$repo_dir/lab/scripts/runtime-stop.sh" >/dev/null 2>&1
@@ -44,38 +77,52 @@ address=/example.test/192.0.2.123
 pid-file=/run/home-virtual-router/physical-simulation/upstream-dnsmasq.pid
 EOF
 ip netns exec hvr-sim-upstream-ns dnsmasq --conf-file=/run/home-virtual-router/physical-simulation/upstream-dnsmasq.conf
-"$repo_dir/physical/scripts/preflight.sh"
-"$repo_dir/lab/scripts/runtime-start.sh"
-ip -o -4 address show dev hvr-sim-wan | awk '{print $4}' | grep -F -x '203.0.113.2/24' >/dev/null
-ip -o -4 address show dev hvr-sim-lan | awk '{print $4}' | grep -F -x '10.0.0.1/24' >/dev/null
-ip -o -4 route show default | grep -E '^default via 203\.0\.113\.1 dev hvr-sim-wan([[:space:]]|$)' >/dev/null
-[ "$(sysctl -n net.ipv4.ip_forward)" = 1 ]
-nft list table ip hvr-nat | grep -F 'oifname "hvr-sim-wan" ip saddr 10.0.0.0/24 masquerade' >/dev/null
-nft list table inet hvr-filter | grep -F 'iifname "hvr-sim-lan" oifname "hvr-sim-wan"' >/dev/null
+source "$repo_dir/physical/scripts/physical-common.sh"
+load_topology_config
+initial_forwarding="$(sysctl -n net.ipv4.ip_forward)"
+check "physical preflight" "$repo_dir/physical/scripts/preflight.sh"
+check "first runtime-start" "$repo_dir/lab/scripts/runtime-start.sh"
+check "runtime deployment state is physical" runtime_state_physical
+check "physical WAN address 203.0.113.2/24" wan_address_ok
+check "physical LAN address 10.0.0.1/24" lan_address_ok
+check "physical default route" default_route_ok
+check "IPv4 forwarding" forwarding_ok
+check "exact HVR NAT masquerade rule" nat_rule_exists
+check "complete R5 forwarding firewall rule set" filter_rules_exist
 ip netns exec hvr-sim-client-ns env HVR_INTERNAL_PHYSICAL_SIMULATION=1 dhclient -4 -1 -v \
   -pf /run/home-virtual-router/physical-simulation/dhclient.pid \
   -lf /run/home-virtual-router/physical-simulation/dhclient.leases \
   -cf "$repo_dir/router/config/dhclient.conf" \
   -sf "$repo_dir/physical/scripts/simulation-dhclient-hook.sh" hvr-sim-client
-client_address="$(ip -n hvr-sim-client-ns -o -4 address show dev hvr-sim-client scope global | awk '{print $4}')"
-case "$client_address" in 10.0.0.1??/24) ;; *) echo "error: simulated client lease is invalid: $client_address" >&2; exit 1 ;; esac
-ip -n hvr-sim-client-ns route show default | grep -E '^default via 10\.0\.0\.1 dev hvr-sim-client([[:space:]]|$)' >/dev/null
+lease_ready=0
+for _attempt in {1..50}; do dhcp_lease_ok && { lease_ready=1; break; }; sleep 0.1; done
+check "dynamic DHCP lease in 10.0.0.100-199/24" test "$lease_ready" -eq 1
+check "DHCP default gateway 10.0.0.1" dhcp_route_ok
+check "DNS query through physical LAN" dns_query_ok
+client_ip="${client_address%/*}"
+wan_to_lan_blocked() { ! ip netns exec hvr-sim-upstream-ns ping -c 1 -W 1 "$client_ip" >/dev/null 2>&1; }
+check "unsolicited WAN-to-LAN traffic is blocked" wan_to_lan_blocked
 timeout 5 ip netns exec hvr-sim-upstream-ns tcpdump -U -n -i hvr-sim-up -c 1 \
   'icmp and src host 203.0.113.2' >/run/home-virtual-router/physical-simulation/nat-proof.txt 2>&1 &
 capture_pid=$!
-sleep 0.2
-ip netns exec hvr-sim-client-ns ping -c 2 -W 2 203.0.113.1 >/dev/null
-wait "$capture_pid"
-ip netns exec hvr-sim-client-ns dig +time=2 +tries=1 @10.0.0.1 example.test A +short | grep -F -x 192.0.2.123 >/dev/null
-grep -F -x 'interface=hvr-sim-lan' /run/home-virtual-router/ipfix/pmacctd.conf >/dev/null
-metrics_json="$("$repo_dir/lab/scripts/show-metrics.sh")"
-python3 -c 'import json,sys; d=json.load(sys.stdin); m=d["router"]["metrics"]; i={x["interface"]["role"]:x["interface"]["name"] for x in m if "interface" in x}; assert i=={"lan":"hvr-sim-lan","wan":"hvr-sim-wan"}' <<<"$metrics_json"
-"$repo_dir/lab/scripts/runtime-start.sh"
-"$repo_dir/lab/scripts/runtime-status.sh"
-"$repo_dir/lab/scripts/runtime-check.sh"
-"$repo_dir/lab/scripts/runtime-stop.sh"
-"$repo_dir/lab/scripts/runtime-stop.sh"
-ip -o -4 address show dev hvr-sim-wan | grep -F '203.0.113.2/' >/dev/null 2>&1 && exit 1 || true
-[ ! -e /run/home-virtual-router/runtime/state.env ]
+capture_ready=0
+for _attempt in {1..50}; do grep -F 'listening on hvr-sim-up' /run/home-virtual-router/physical-simulation/nat-proof.txt >/dev/null 2>&1 && { capture_ready=1; break; }; sleep 0.1; done
+check "NAT observation capture readiness" test "$capture_ready" -eq 1
+check "routed client ICMP" ip netns exec hvr-sim-client-ns ping -c 2 -W 2 203.0.113.1
+check "upstream observed NAT source 203.0.113.2" wait "$capture_pid"
+check "IPFIX process and LAN-side capture" ipfix_capture_ok
+check "metrics LAN role hvr-sim-lan" metrics_role_ok lan hvr-sim-lan
+check "metrics WAN role hvr-sim-wan" metrics_role_ok wan hvr-sim-wan
+check "metrics exporter process identity" metrics_exporter_running
+check "repeated runtime-start" "$repo_dir/lab/scripts/runtime-start.sh"
+check "runtime-status reports physical deployment" runtime_status_physical
+check "runtime-check" "$repo_dir/lab/scripts/runtime-check.sh"
+check "first runtime-stop" "$repo_dir/lab/scripts/runtime-stop.sh"
+check "second runtime-stop" "$repo_dir/lab/scripts/runtime-stop.sh"
+check "runtime-owned physical teardown" physical_runtime_absent
+check "IPv4 forwarding restoration" test "$(sysctl -n net.ipv4.ip_forward)" = "$initial_forwarding"
 trap - EXIT
 cleanup
+check "simulation client namespace cleanup" test ! -e /run/netns/hvr-sim-client-ns
+check "simulation upstream namespace cleanup" test ! -e /run/netns/hvr-sim-upstream-ns
+echo "R13 physical simulation acceptance passed inside isolated namespaces."

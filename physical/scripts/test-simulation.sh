@@ -19,4 +19,12 @@ outer_mount_namespace="$(readlink /proc/self/ns/mnt)"
 unshare --mount --net --pid --fork --mount-proc \
   "$script_dir/test-simulation-inner.sh" "$repo_dir" "$temporary/router.env" \
   "$outer_net_namespace" "$outer_mount_namespace"
-echo "R13 physical simulation passed in isolated mount/network/PID namespaces; this is not R14 hardware validation."
+cleanup
+trap - EXIT
+for interface in hvr-sim-wan hvr-sim-up hvr-sim-lan hvr-sim-client; do
+  ip link show dev "$interface" >/dev/null 2>&1 && { echo "error: simulation interface escaped isolation: $interface" >&2; exit 1; }
+done
+echo "CHECK: outer-host simulation interfaces absent ... PASS"
+[ ! -e "$temporary" ] || { echo "error: simulation temporary directory was not removed: $temporary" >&2; exit 1; }
+echo "CHECK: simulation temporary directory absent ... PASS"
+echo "R13 physical simulation acceptance passed; isolated resources are absent. This is not R14 hardware validation."

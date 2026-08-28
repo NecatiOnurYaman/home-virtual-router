@@ -72,4 +72,5 @@ done < <(runtime_desired_stages)
 runtime_write_state "$profile" running "$started_at" "$owned"
 current_stage="complete"
 trap - EXIT INT TERM
-printf 'HVR runtime is running in %s mode. Owned stages: %s\n' "$profile" "${owned:-none (pre-existing state preserved)}"
+printf 'HVR runtime is running.\nDeployment mode: %s\nTelemetry mode: %s\nOwned stages: %s\n' \
+  "$DEPLOYMENT_MODE" "$profile" "${owned:-none (pre-existing state preserved)}"
