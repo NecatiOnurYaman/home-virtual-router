@@ -16,6 +16,7 @@ readonly RUNTIME_ERROR_FILE="$RUNTIME_DIR/last-error"
 readonly RUNTIME_CONFIG_SNAPSHOT="$RUNTIME_DIR/config.snapshot"
 readonly RUNTIME_STATE_TOOL="$HVR_REPO_DIR/router/runtime/state.py"
 readonly RUNTIME_LOCK_FILE="$RUNTIME_DIR/lock"
+readonly RUNTIME_LOCK_RUNNER="$HVR_REPO_DIR/router/scripts/run_with_runtime_lock.sh"
 
 runtime_dependencies() {
   HVR_CHECK_COMMANDS="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig pmacctd ps readlink flock timeout tac cmp" \
@@ -29,9 +30,13 @@ runtime_prepare_dir() {
 }
 
 runtime_lock() {
+  if [ "${HVR_RUNTIME_LOCK_HELD:-0}" = "1" ]; then
+    return 0
+  fi
   runtime_prepare_dir
-  exec 9>"$RUNTIME_LOCK_FILE"
-  flock -n 9 || die "another HVR runtime operation holds $RUNTIME_LOCK_FILE"
+  HVR_RUNTIME_LOCK_HELD=1 "$RUNTIME_LOCK_RUNNER" "$RUNTIME_LOCK_FILE" \
+    env HVR_RUNTIME_LOCK_HELD=1 "${BASH_SOURCE[1]}" "$@"
+  exit $?
 }
 
 runtime_state_field() {

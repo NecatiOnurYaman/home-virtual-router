@@ -5,8 +5,8 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/runtime-common.sh"
 require_lab_environment
 require_root
-load_topology_config
 runtime_lock
+load_topology_config
 if [ ! -e "$RUNTIME_STATE_FILE" ]; then
   echo "HVR runtime has no owned state; manual stage state was not changed."
   exit 0

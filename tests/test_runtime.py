@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 from router.runtime.state import (
@@ -68,6 +71,14 @@ class RuntimeShellLoadingTests(unittest.TestCase):
         self.assertIn(safety, common)
         self.assertLess(common.index(safety), common.index(topology))
 
+    def test_runtime_lock_uses_close_on_command_wrapper(self) -> None:
+        common = (self.repository / "lab/scripts/runtime-common.sh").read_text(encoding="utf-8")
+        runner = (self.repository / "router/scripts/run_with_runtime_lock.sh").read_text(encoding="utf-8")
+        self.assertIn("RUNTIME_LOCK_RUNNER", common)
+        self.assertNotIn('exec 9>"$RUNTIME_LOCK_FILE"', common)
+        self.assertIn("--close", runner)
+        self.assertIn("--nonblock", runner)
+
     def test_entrypoints_reach_lab_guard_without_command_not_found(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fake_bin = Path(directory)
@@ -87,6 +98,72 @@ class RuntimeShellLoadingTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 127)
                     self.assertIn("must run inside the Linux lab VM", result.stderr)
                     self.assertNotIn("command not found", result.stderr)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("flock"), "requires Linux util-linux flock")
+class RuntimeLockTests(unittest.TestCase):
+    repository = Path(__file__).resolve().parents[1]
+    runner = repository / "router/scripts/run_with_runtime_lock.sh"
+
+    def test_concurrent_operation_is_rejected_then_sequential_operation_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / "runtime.lock"
+            ready = Path(directory) / "ready"
+            holder = subprocess.Popen(
+                [str(self.runner), str(lock), sys.executable, "-c",
+                 "import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch(); time.sleep(1)", str(ready)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                for _ in range(100):
+                    if ready.exists():
+                        break
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "lock holder did not become ready")
+                concurrent = subprocess.run(
+                    [str(self.runner), str(lock), "true"], capture_output=True,
+                    text=True, timeout=2, check=False,
+                )
+                self.assertEqual(concurrent.returncode, 75)
+                self.assertIn("another HVR runtime operation holds", concurrent.stderr)
+            finally:
+                holder.wait(timeout=3)
+            sequential = subprocess.run(
+                [str(self.runner), str(lock), "true"], timeout=2, check=False,
+            )
+            self.assertEqual(sequential.returncode, 0)
+
+    def test_long_lived_child_does_not_retain_operation_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / "runtime.lock"
+            child_pid = Path(directory) / "child.pid"
+            launch = subprocess.run(
+                [str(self.runner), str(lock), sys.executable, "-c",
+                 "import pathlib,subprocess,sys; p=subprocess.Popen(['sleep','2'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True); pathlib.Path(sys.argv[1]).write_text(str(p.pid))",
+                 str(child_pid)],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            self.assertEqual(launch.returncode, 0, launch.stderr)
+            pid = int(child_pid.read_text(encoding="utf-8"))
+            try:
+                self.assertTrue(Path(f"/proc/{pid}").exists())
+                reacquire = subprocess.run(
+                    [str(self.runner), str(lock), "true"], timeout=2, check=False,
+                )
+                self.assertEqual(reacquire.returncode, 0)
+                lock_target = str(lock.resolve())
+                targets = []
+                for descriptor in Path(f"/proc/{pid}/fd").iterdir():
+                    try:
+                        targets.append(str(descriptor.resolve()))
+                    except FileNotFoundError:
+                        pass
+                self.assertNotIn(lock_target, targets)
+            finally:
+                try:
+                    os.kill(pid, 15)
+                except ProcessLookupError:
+                    pass
 
 
 if __name__ == "__main__":

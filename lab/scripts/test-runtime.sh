@@ -5,6 +5,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/runtime-common.sh"
 require_lab_environment
 require_root
+runtime_lock
 load_topology_config
 
 if [ -e "$RUNTIME_STATE_FILE" ]; then

@@ -5,10 +5,10 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$script_dir/runtime-common.sh"
 require_lab_environment
 require_root
+runtime_lock
 load_topology_config
 validate_topology_names
 runtime_dependencies
-runtime_lock
 
 profile="$TELEMETRY_MODE"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
