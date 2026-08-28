@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
 import tempfile
 import unittest
-from pathlib import Path
 
 from router.runtime.state import (
     RuntimeState, StateError, desired_stages, parse, read, rollback_order, write_atomic,
@@ -46,6 +48,45 @@ class RuntimeStateTests(unittest.TestCase):
         self.assertEqual(
             desired_stages("observability", False, False)[-1], "observability"
         )
+
+
+class RuntimeShellLoadingTests(unittest.TestCase):
+    repository = Path(__file__).resolve().parents[1]
+    entrypoints = (
+        "runtime-start.sh",
+        "runtime-stop.sh",
+        "runtime-restart.sh",
+        "runtime-status.sh",
+        "runtime-check.sh",
+        "test-runtime.sh",
+    )
+
+    def test_runtime_common_loads_safety_before_topology_helpers(self) -> None:
+        common = (self.repository / "lab/scripts/runtime-common.sh").read_text(encoding="utf-8")
+        safety = 'source "$runtime_script_dir/../../router/scripts/safety.sh"'
+        topology = 'source "$runtime_script_dir/topology-common.sh"'
+        self.assertIn(safety, common)
+        self.assertLess(common.index(safety), common.index(topology))
+
+    def test_entrypoints_reach_lab_guard_without_command_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fake_bin = Path(directory)
+            uname = fake_bin / "uname"
+            uname.write_text("#!/usr/bin/env sh\necho Darwin\n", encoding="utf-8")
+            uname.chmod(0o755)
+            environment = os.environ.copy()
+            environment["PATH"] = f"{fake_bin}{os.pathsep}{environment['PATH']}"
+            for name in self.entrypoints:
+                script = self.repository / "lab/scripts" / name
+                with self.subTest(entrypoint=name):
+                    result = subprocess.run(
+                        [str(script)], cwd=directory, env=environment,
+                        capture_output=True, text=True, timeout=5, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotEqual(result.returncode, 127)
+                    self.assertIn("must run inside the Linux lab VM", result.stderr)
+                    self.assertNotIn("command not found", result.stderr)
 
 
 if __name__ == "__main__":

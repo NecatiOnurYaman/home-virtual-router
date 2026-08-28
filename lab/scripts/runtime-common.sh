@@ -2,6 +2,8 @@
 
 # R12 orchestration helpers. Sourcing this file changes no runtime state.
 runtime_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../../router/scripts/safety.sh
+source "$runtime_script_dir/../../router/scripts/safety.sh"
 # shellcheck source=topology-common.sh
 source "$runtime_script_dir/topology-common.sh"
 
