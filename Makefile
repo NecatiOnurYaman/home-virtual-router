@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test systemd-show
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh tests/*.sh
@@ -149,3 +149,28 @@ metrics-export-status:
 metrics-export-test:
 	@echo "Testing real R11 HTTP pushes across the isolated namespaces requires root."
 	sudo lab/scripts/test-metrics-export.sh
+
+runtime-start:
+	@echo "Converging the complete R12 lab runtime requires root."
+	sudo lab/scripts/runtime-start.sh
+
+runtime-stop:
+	@echo "Stopping only stages recorded as R12-owned requires root."
+	sudo lab/scripts/runtime-stop.sh
+
+runtime-restart:
+	@echo "Restarting the R12-owned runtime requires root."
+	sudo lab/scripts/runtime-restart.sh
+
+runtime-status:
+	@sudo lab/scripts/runtime-status.sh
+
+runtime-check:
+	@sudo lab/scripts/runtime-check.sh
+
+runtime-test:
+	@echo "Running the bounded R12 lifecycle acceptance requires root."
+	sudo lab/scripts/test-runtime.sh
+
+systemd-show:
+	@python3 router/scripts/render_systemd_unit.py "$(CURDIR)"

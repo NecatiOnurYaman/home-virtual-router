@@ -1,0 +1,17 @@
+[Unit]
+Description=Home Virtual Router lab runtime
+Documentation=file://@HVR_REPO_DIR@/docs/runtime.md
+After=network.target
+ConditionPathExists=/etc/home-virtual-router-lab
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@HVR_REPO_DIR@
+ExecStart=@HVR_REPO_DIR@/lab/scripts/runtime-start.sh
+ExecStop=@HVR_REPO_DIR@/lab/scripts/runtime-stop.sh
+TimeoutStartSec=180
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

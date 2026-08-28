@@ -4,7 +4,7 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository is at **Stage R11: router metrics export**. R11 periodically sends fresh R10 snapshots as JSON HTTP POST requests from `hvr-router` to one configured receiver. R9 observability integration and R8 isolated validation remain unchanged. Router management, anomaly detection, SNMP, physical deployment, persistent production-service packaging, and IPv6 stages are not enabled.
+The repository is at **Stage R12: router runtime hardening**. R12 provides an ownership-aware, idempotent lifecycle for the validated R2–R11 lab stack. R9 observability integration and the individual stage commands remain unchanged. Router management, anomaly detection, SNMP, physical deployment, production service packaging, and IPv6 stages are not enabled.
 
 Development happens inside a dedicated Ubuntu 26.04 LTS virtual machine running under UTM on macOS. The namespace lab stays inside that VM without changing macOS networking or the VM's normal UTM-facing interface and default route.
 
@@ -42,6 +42,8 @@ make lab-destroy
 
 The lab targets clearly invoke `sudo`. DHCP disable restores the earlier static client state for staged teardown. Missing dependencies, including `dhclient`, are reported but never installed automatically. See `docs/development-lab.md` for lifecycle and safety details.
 
+For the complete runtime, use `make runtime-start`, `runtime-status`, `runtime-check`, `runtime-restart`, and `runtime-stop`. R12 starts only missing stages, validates healthy existing stages, rejects conflicting partial state, and removes only stages recorded as runtime-owned. `make runtime-test` proves bounded double-start/double-stop behavior from an absent Ubuntu lab baseline. State and diagnostics are under `/run/home-virtual-router/runtime/`; see `docs/runtime.md` for rollback, degraded-state, reboot, and optional systemd-template details.
+
 ## Observability integration
 
 The checked-in `lab` mode keeps `IPFIX_COLLECTOR_HOST=192.0.2.1` and `make ipfix-test` unchanged. For real integration, set `TELEMETRY_MODE=observability`, `IPFIX_COLLECTOR_HOST=198.18.0.1`, `IPFIX_COLLECTOR_PORT=4739`, and `METRICS_EXPORT_HOST=198.18.0.1` in the data-only `lab/config/defaults.env`.
@@ -64,4 +66,4 @@ R11 reuses the snapshot unchanged inside a small envelope with `protocol_version
 
 `make metrics-export-enable`, `metrics-export-status`, and `metrics-export-disable` manage only the exact PID/start-time-verified Python process in `hvr-router`. A failed request is logged and discarded; the next fresh collection runs on the monotonic interval, with no queue, replay, history, or backoff. `make metrics-export-test` starts a bounded standard-library receiver only in `hvr-upstream`, rejects malformed input, and proves two advancing real snapshots arrive from `192.0.2.2`. That receiver is an acceptance fixture, not a bundled observability service.
 
-The transport is plain HTTP over TCP and assumes the isolated namespace lab or dedicated telemetry link is trusted; authentication and TLS are outside R11. Runtime identity and diagnostics live only under `/run/home-virtual-router/metrics-export/` as `exporter.pid`, `exporter.starttime`, `exporter.log`, `command.txt`, and test-only receiver files. HNOP Stage 15 has not been implemented here and will own the real receiver and persistence. R12 will own persistent service supervision and production hardening.
+The transport is plain HTTP over TCP and assumes the isolated namespace lab or dedicated telemetry link is trusted; authentication and TLS are outside R11. Runtime identity and diagnostics live only under `/run/home-virtual-router/metrics-export/` as `exporter.pid`, `exporter.starttime`, `exporter.log`, `command.txt`, and test-only receiver files. HNOP Stage 15 has not been implemented here and will own the real receiver and persistence. R12 owns the current lab runtime orchestration; persistent production packaging remains deferred.

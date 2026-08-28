@@ -1,5 +1,7 @@
 # Isolated Linux development lab
 
+Stage R12 adds `make runtime-start`, `runtime-status`, `runtime-check`, `runtime-restart`, `runtime-stop`, and the bounded clean-baseline `make runtime-test`. These orchestrate the manual stage commands below without replacing them. Ownership, rollback, degraded telemetry behavior, volatile state, and the optional uninstalled systemd template are documented in `docs/runtime.md`.
+
 The project uses the existing dedicated Ubuntu 26.04 LTS (`resolute`) virtual machine running under UTM on macOS. Ubuntu supplies the Linux kernel required by namespaces. UTM and the Ubuntu VM are not managed by this repository.
 
 The Ubuntu VM hosts the isolated namespace lab; it is not itself part of the simulated router topology:

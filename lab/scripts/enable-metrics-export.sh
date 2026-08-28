@@ -9,7 +9,11 @@ load_topology_config
 namespace_exists "$ROUTER_NAMESPACE" || die "R2 router namespace is absent"
 ip -n "$ROUTER_NAMESPACE" link show dev "$ROUTER_LAN_INTERFACE" >/dev/null || die "R10 LAN interface is absent"
 ip -n "$ROUTER_NAMESPACE" link show dev "$ROUTER_WAN_INTERFACE" >/dev/null || die "R10 WAN interface is absent"
-ip -n "$ROUTER_NAMESPACE" link show dev "$TELEMETRY_ROUTER_INTERFACE" >/dev/null || die "R10 telemetry interface is absent"
+interfaces=(--interface "lan=$ROUTER_LAN_INTERFACE" --interface "wan=$ROUTER_WAN_INTERFACE")
+if [ "$TELEMETRY_MODE" = "observability" ]; then
+  ip -n "$ROUTER_NAMESPACE" link show dev "$TELEMETRY_ROUTER_INTERFACE" >/dev/null || die "R9 telemetry interface is absent in observability mode"
+  interfaces+=(--interface "telemetry=$TELEMETRY_ROUTER_INTERFACE")
+fi
 mkdir -p -- "$METRICS_EXPORT_RUNTIME_DIR"
 if metrics_exporter_running; then
   echo "R11 metrics exporter is already running."
@@ -22,7 +26,7 @@ import sys
 value = float(sys.argv[1])
 assert 0.1 <= value <= 3600
 PY
-command=(python3 "$METRICS_EXPORTER" --router-id "$ROUTER_ID" --host "$METRICS_EXPORT_HOST" --port "$METRICS_EXPORT_PORT" --path "$METRICS_EXPORT_PATH" --interval "$interval" --timeout "$METRICS_EXPORT_TIMEOUT_SECONDS" --interface "lan=$ROUTER_LAN_INTERFACE" --interface "wan=$ROUTER_WAN_INTERFACE" --interface "telemetry=$TELEMETRY_ROUTER_INTERFACE")
+command=(python3 "$METRICS_EXPORTER" --router-id "$ROUTER_ID" --host "$METRICS_EXPORT_HOST" --port "$METRICS_EXPORT_PORT" --path "$METRICS_EXPORT_PATH" --interval "$interval" --timeout "$METRICS_EXPORT_TIMEOUT_SECONDS" "${interfaces[@]}")
 printf '%q ' ip netns exec "$ROUTER_NAMESPACE" env "PYTHONPATH=$HVR_REPO_DIR" "${command[@]}" > "$METRICS_EXPORT_COMMAND_FILE"
 printf '\n' >> "$METRICS_EXPORT_COMMAND_FILE"
 ip netns exec "$ROUTER_NAMESPACE" env "PYTHONPATH=$HVR_REPO_DIR" "${command[@]}" >> "$METRICS_EXPORT_LOG_FILE" 2>&1 &
