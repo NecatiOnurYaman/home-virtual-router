@@ -169,7 +169,7 @@ false
     def test_simulation_exercises_functional_physical_lifecycle(self) -> None:
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
         for proof in (
-            "dhclient -4 -1", "client_address=", "route show default",
+            "dhclient -4 -d", "client_address=", "route show default",
             "tcpdump", "ping -c 2", "dig +time=2", "nat_rule_exists",
             "filter_rules_exist", "IPFIX_CONFIG_FILE", "show-metrics.sh",
             "runtime-status.sh", "runtime-check.sh",
@@ -197,6 +197,23 @@ false
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
         self.assertIn("runtime deployment state is physical", inner)
         self.assertIn("--field deployment", inner)
+
+    def test_simulation_client_is_prepared_and_bounded_safely(self) -> None:
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        self.assertLess(inner.index("ip link set hvr-sim-client netns"), inner.index("ip -n hvr-sim-client-ns link set hvr-sim-client up"))
+        self.assertIn("ip -n hvr-sim-client-ns link set lo up", inner)
+        self.assertIn("UP[^>]*LOWER_UP", inner)
+        self.assertIn('install -d -o 0 -g 0 -m 0700 /run/home-virtual-router/physical-simulation', inner)
+        self.assertIn('install -o 0 -g 0 -m 0600 /dev/null', inner)
+        self.assertIn('install -o 0 -g 0 -m 0700 "$repo_dir/physical/scripts/simulation-dhclient-hook.sh"', inner)
+        self.assertIn('/run/home-virtual-router/physical-simulation/dhclient -4 -d -v', inner)
+        self.assertIn("for _attempt in {1..150}", inner)
+        self.assertIn("simulation_dhclient_matches", inner)
+        self.assertIn("exact simulation dhclient termination", inner)
+        self.assertIn("DHCPDISCOVER DHCPOFFER DHCPREQUEST DHCPACK", inner)
+        self.assertNotIn("chmod 777", inner)
+        self.assertNotIn("pkill", inner)
+        self.assertNotIn("killall", inner)
 
     def test_host_execution_and_exact_owned_objects(self) -> None:
         topology = TOPOLOGY_COMMON.read_text(encoding="utf-8")
