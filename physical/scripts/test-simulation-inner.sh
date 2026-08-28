@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
-repo_dir="$1" config_dir="$2"
+repo_dir="$1" simulation_config="$2" outer_net_namespace="$3" outer_mount_namespace="$4"
 mount --make-rprivate /
-mount --bind "$config_dir" /etc/home-virtual-router
 mount -t tmpfs tmpfs /run
 mkdir -p /run/home-virtual-router
+export HVR_INTERNAL_PHYSICAL_SIMULATION=1
+export HVR_INTERNAL_SIMULATION_CONFIG="$simulation_config"
+export HVR_INTERNAL_OUTER_NET_NAMESPACE="$outer_net_namespace"
+export HVR_INTERNAL_OUTER_MOUNT_NAMESPACE="$outer_mount_namespace"
 ip link add hvr-sim-wan type veth peer name hvr-sim-up
 ip link add hvr-sim-lan type veth peer name hvr-sim-client
 ip link set hvr-sim-up up

@@ -5,7 +5,17 @@
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly HVR_REPO_DIR="$(cd "$script_dir/../.." && pwd)"
 readonly HVR_LOCAL_CONFIG="/etc/home-virtual-router/router.env"
-if [ -f "$HVR_LOCAL_CONFIG" ]; then
+if [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-}" = 1 ]; then
+  [ "$(id -u)" -eq 0 ] || { echo "error: internal physical simulation requires root" >&2; return 1 2>/dev/null || exit 1; }
+  [ -n "${HVR_INTERNAL_SIMULATION_CONFIG:-}" ] && [ -f "$HVR_INTERNAL_SIMULATION_CONFIG" ] ||
+    { echo "error: internal physical simulation config is missing" >&2; return 1 2>/dev/null || exit 1; }
+  [ -n "${HVR_INTERNAL_OUTER_NET_NAMESPACE:-}" ] && [ -n "${HVR_INTERNAL_OUTER_MOUNT_NAMESPACE:-}" ] ||
+    { echo "error: internal physical simulation namespace identity is missing" >&2; return 1 2>/dev/null || exit 1; }
+  [ "$(readlink /proc/self/ns/net)" != "$HVR_INTERNAL_OUTER_NET_NAMESPACE" ] &&
+    [ "$(readlink /proc/self/ns/mnt)" != "$HVR_INTERNAL_OUTER_MOUNT_NAMESPACE" ] ||
+    { echo "error: refusing physical simulation outside isolated network and mount namespaces" >&2; return 1 2>/dev/null || exit 1; }
+  readonly HVR_CONFIG="$HVR_INTERNAL_SIMULATION_CONFIG"
+elif [ -f "$HVR_LOCAL_CONFIG" ]; then
   readonly HVR_CONFIG="$HVR_LOCAL_CONFIG"
 else
   readonly HVR_CONFIG="$HVR_REPO_DIR/lab/config/defaults.env"

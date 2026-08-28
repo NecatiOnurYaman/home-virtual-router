@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "router/scripts/validate_config.py"
 PHYSICAL_COMMON = ROOT / "physical/scripts/physical-common.sh"
 PHYSICAL_STAGE = ROOT / "physical/scripts/physical-stage.sh"
+SIMULATION = ROOT / "physical/scripts/test-simulation.sh"
+SIMULATION_INNER = ROOT / "physical/scripts/test-simulation-inner.sh"
 TOPOLOGY_COMMON = ROOT / "lab/scripts/topology-common.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config_physical", VALIDATOR)
@@ -83,6 +85,37 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertIn('/etc/home-virtual-router/allow-physical-deployment', common)
         for forbidden in ("nft flush ruleset", "iptables -F", "rm /etc/netplan", "systemctl stop NetworkManager"):
             self.assertNotIn(forbidden, combined)
+
+    def test_simulation_uses_ephemeral_config_without_production_paths(self) -> None:
+        harness = SIMULATION.read_text(encoding="utf-8")
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        self.assertIn('temporary="$(mktemp -d /tmp/hvr-physical-sim.XXXXXX)"', harness)
+        self.assertIn('"$temporary/router.env"', harness)
+        self.assertNotIn("/etc/home-virtual-router", harness + inner)
+        self.assertNotIn("allow-physical-deployment", harness + inner)
+        self.assertNotIn("mount --bind", inner)
+
+    def test_simulation_override_requires_root_and_two_isolated_namespaces(self) -> None:
+        topology = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        for text in (topology, common):
+            self.assertIn("HVR_INTERNAL_PHYSICAL_SIMULATION", text)
+            self.assertIn("id -u", text)
+            self.assertIn("/proc/self/ns/net", text)
+            self.assertIn("/proc/self/ns/mnt", text)
+        self.assertIn('readonly HVR_LOCAL_CONFIG="/etc/home-virtual-router/router.env"', topology)
+        self.assertIn('PHYSICAL_AUTHORIZATION_MARKER="/etc/home-virtual-router/allow-physical-deployment"', common)
+
+    def test_simulation_cleanup_is_exact_and_interfaces_are_allowlisted(self) -> None:
+        harness = SIMULATION.read_text(encoding="utf-8")
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        self.assertIn("trap cleanup EXIT", harness)
+        self.assertIn('rm -f -- "$temporary/router.env"', harness)
+        self.assertNotIn("rm -rf", harness + inner)
+        self.assertNotIn("pkill", harness + inner)
+        self.assertNotIn("killall", harness + inner)
+        for interface in ("hvr-sim-wan", "hvr-sim-up", "hvr-sim-lan", "hvr-sim-client"):
+            self.assertIn(interface, harness + inner)
 
     def test_host_execution_and_exact_owned_objects(self) -> None:
         topology = TOPOLOGY_COMMON.read_text(encoding="utf-8")

@@ -50,10 +50,9 @@ Teardown order is metrics, IPFIX, DNS, DHCP, firewall, NAT, forwarding restorati
 
 ## Simulation, first deployment, and recovery
 
-The Linux-only simulation requires root/unshare and an existing project config directory. It bind-mounts temporary config/authorization and uses private mount/network/PID namespaces with dummy NICs:
+The Linux-only simulation requires root and `unshare`. It generates an ephemeral config under a private temporary directory and uses private mount/network/PID namespaces with test-only veths. It neither reads nor creates `/etc/home-virtual-router` or the production authorization marker. The internal config selector fails unless both the mount and network namespace differ from the invoking host:
 
 ```sh
-sudo install -d -m 0750 /etc/home-virtual-router
 sudo make physical-sim-test
 ```
 

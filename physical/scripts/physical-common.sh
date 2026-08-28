@@ -23,6 +23,14 @@ readonly PHYSICAL_FORWARDING_ORIGINAL="$PHYSICAL_RUNTIME_DIR/forwarding-original
 require_physical_authorization() {
   require_linux || return 1
   [ "$DEPLOYMENT_MODE" = "physical" ] || die "DEPLOYMENT_MODE must be physical"
+  if [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-}" = 1 ]; then
+    [ "$HVR_CONFIG" = "${HVR_INTERNAL_SIMULATION_CONFIG:-}" ] || die "physical simulation config identity is inconsistent"
+    [ "$(id -u)" -eq 0 ] || die "physical simulation requires root"
+    [ "$(readlink /proc/self/ns/net)" != "${HVR_INTERNAL_OUTER_NET_NAMESPACE:-}" ] &&
+      [ "$(readlink /proc/self/ns/mnt)" != "${HVR_INTERNAL_OUTER_MOUNT_NAMESPACE:-}" ] ||
+      die "physical simulation requires isolated network and mount namespaces"
+    return 0
+  fi
   [ -f "$PHYSICAL_AUTHORIZATION_MARKER" ] || die "physical deployment is not authorized on this host; create $PHYSICAL_AUTHORIZATION_MARKER deliberately"
   [ "$HVR_CONFIG" = "$HVR_LOCAL_CONFIG" ] || die "physical deployment requires the fixed machine-local config $HVR_LOCAL_CONFIG"
   [ "$(stat -c %u "$HVR_CONFIG")" = 0 ] || die "physical configuration must be owned by root"

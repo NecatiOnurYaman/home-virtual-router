@@ -133,6 +133,8 @@ class RuntimeLockTests(unittest.TestCase):
                 self.assertIn("another HVR runtime operation holds", concurrent.stderr)
             finally:
                 holder.wait(timeout=3)
+                if holder.stderr is not None:
+                    holder.stderr.close()
             sequential = subprocess.run(
                 [str(self.runner), str(lock), "true"], timeout=2, check=False,
             )
