@@ -40,17 +40,45 @@ simulation_hook_executable() {
   [ "$(stat -c %u:%g:%a /run/home-virtual-router/physical-simulation/dhclient-hook)" = 0:0:700 ] &&
     [ -x /run/home-virtual-router/physical-simulation/dhclient-hook ]
 }
-simulation_dhclient_matches() {
-  local pid="$1" executable command_line
+process_has_exact_argument() {
+  local pid="$1" expected="$2" argument
+  while IFS= read -r -d '' argument; do [ "$argument" = "$expected" ] && return 0; done < "/proc/$pid/cmdline"
+  return 1
+}
+simulation_dhclient_candidate_matches() {
+  local pid="$1" executable actual_netns
   [ -e "/proc/$pid/exe" ] || return 1
-  executable="$(readlink "/proc/$pid/exe")" || return 1
+  executable="$(readlink -f "/proc/$pid/exe")" || return 1
   [ "$executable" = /run/home-virtual-router/physical-simulation/dhclient ] || return 1
-  command_line="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
-  printf '%s\n' "$command_line" | grep -F -- 'hvr-sim-client' >/dev/null
+  for expected in -d -pf /run/home-virtual-router/physical-simulation/dhclient.pid \
+    -lf /run/home-virtual-router/physical-simulation/dhclient.leases \
+    -sf /run/home-virtual-router/physical-simulation/dhclient-hook hvr-sim-client; do
+    process_has_exact_argument "$pid" "$expected" || return 1
+  done
+  actual_netns="$(readlink "/proc/$pid/ns/net")" || return 1
+  [ "$actual_netns" = "$simulation_client_netns" ] || return 1
+  [ "$(cat /run/home-virtual-router/physical-simulation/dhclient.pid 2>/dev/null)" = "$pid" ]
+}
+simulation_dhclient_matches() {
+  local pid="$1" expected_starttime="$2"
+  simulation_dhclient_candidate_matches "$pid" || return 1
+  [ "$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" = "$expected_starttime" ]
+}
+report_simulation_dhclient_identity() {
+  local pid="$1" actual_exe="<exited>" actual_cmdline="<exited>" actual_netns="<exited>" actual_starttime="<exited>" pidfile="<absent>"
+  [ ! -e "/proc/$pid/exe" ] || actual_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo '<unreadable>')"
+  [ ! -r "/proc/$pid/cmdline" ] || actual_cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
+  [ ! -e "/proc/$pid/ns/net" ] || actual_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null || echo '<unreadable>')"
+  [ ! -r "/proc/$pid/stat" ] || actual_starttime="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || echo '<unreadable>')"
+  [ ! -r /run/home-virtual-router/physical-simulation/dhclient.pid ] || pidfile="$(cat /run/home-virtual-router/physical-simulation/dhclient.pid)"
+  printf 'dhclient identity diagnostic:\n  PID: %s\n  expected exe: %s\n  actual exe: %s\n  expected cmdline args: %s\n  actual cmdline: %s\n  expected netns: %s\n  actual netns: %s\n  expected pidfile: %s\n  actual pidfile: %s\n  actual starttime: %s\n' \
+    "$pid" /run/home-virtual-router/physical-simulation/dhclient \
+    "$actual_exe" '-d -pf .../dhclient.pid -lf .../dhclient.leases -sf .../dhclient-hook hvr-sim-client' \
+    "$actual_cmdline" "$simulation_client_netns" "$actual_netns" "$pid" "$pidfile" "$actual_starttime" >&2
 }
 stop_simulation_dhclient() {
-  local pid="$1" attempt
-  simulation_dhclient_matches "$pid" || return 1
+  local pid="$1" expected_starttime="$2" attempt
+  simulation_dhclient_matches "$pid" "$expected_starttime" || { report_simulation_dhclient_identity "$pid"; return 1; }
   kill "$pid"
   for attempt in {1..50}; do
     if ! kill -0 "$pid" 2>/dev/null || [ "$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)" = Z ]; then
@@ -84,7 +112,7 @@ physical_runtime_absent() {
 cleanup() {
   set +e
   "$repo_dir/lab/scripts/runtime-stop.sh" >/dev/null 2>&1
-  [ -z "${simulation_dhclient_pid:-}" ] || stop_simulation_dhclient "$simulation_dhclient_pid" 2>/dev/null
+  [ -z "${simulation_dhclient_pid:-}" ] || stop_simulation_dhclient "$simulation_dhclient_pid" "${simulation_dhclient_starttime:-}" 2>/dev/null
   [ ! -s /run/home-virtual-router/physical-simulation/upstream-dnsmasq.pid ] ||
     kill "$(cat /run/home-virtual-router/physical-simulation/upstream-dnsmasq.pid)" 2>/dev/null
   ip netns del hvr-sim-client-ns 2>/dev/null
@@ -93,6 +121,7 @@ cleanup() {
 trap cleanup EXIT
 ip netns add hvr-sim-client-ns
 ip netns add hvr-sim-upstream-ns
+simulation_client_netns="$(ip netns exec hvr-sim-client-ns readlink /proc/self/ns/net)"
 ip link add hvr-sim-wan type veth peer name hvr-sim-up
 ip link add hvr-sim-lan type veth peer name hvr-sim-client
 ip link set hvr-sim-up netns hvr-sim-upstream-ns
@@ -148,7 +177,19 @@ ip netns exec hvr-sim-client-ns env HVR_INTERNAL_PHYSICAL_SIMULATION=1 \
   -sf /run/home-virtual-router/physical-simulation/dhclient-hook hvr-sim-client \
   >/run/home-virtual-router/physical-simulation/dhclient.log 2>&1 &
 simulation_dhclient_pid=$!
-check "simulation dhclient process identity" simulation_dhclient_matches "$simulation_dhclient_pid"
+identity_ready=0
+for _attempt in {1..50}; do
+  if simulation_dhclient_candidate_matches "$simulation_dhclient_pid"; then identity_ready=1; break; fi
+  kill -0 "$simulation_dhclient_pid" 2>/dev/null || break
+  sleep 0.1
+done
+if [ "$identity_ready" -eq 0 ]; then
+  report_simulation_dhclient_identity "$simulation_dhclient_pid"
+  tail -n 40 /run/home-virtual-router/physical-simulation/dhclient.log >&2
+fi
+check "simulation dhclient process identity" test "$identity_ready" -eq 1
+simulation_dhclient_starttime="$(awk '{print $22}' "/proc/$simulation_dhclient_pid/stat")"
+check "simulation dhclient PID start time" simulation_dhclient_matches "$simulation_dhclient_pid" "$simulation_dhclient_starttime"
 lease_ready=0
 for _attempt in {1..150}; do
   dhcp_lease_ok && { lease_ready=1; break; }
@@ -159,8 +200,9 @@ done
 check "dynamic DHCP lease in 10.0.0.100-199/24" test "$lease_ready" -eq 1
 check "DHCP discover-offer-request-ack exchange" dhcp_dora_ok
 check "DHCP default gateway 10.0.0.1" dhcp_route_ok
-check "exact simulation dhclient termination" stop_simulation_dhclient "$simulation_dhclient_pid"
+check "exact simulation dhclient termination" stop_simulation_dhclient "$simulation_dhclient_pid" "$simulation_dhclient_starttime"
 simulation_dhclient_pid=""
+simulation_dhclient_starttime=""
 check "DNS query through physical LAN" dns_query_ok
 client_ip="${client_address%/*}"
 wan_to_lan_blocked() { ! ip netns exec hvr-sim-upstream-ns ping -c 1 -W 1 "$client_ip" >/dev/null 2>&1; }

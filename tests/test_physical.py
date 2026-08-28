@@ -215,6 +215,23 @@ false
         self.assertNotIn("pkill", inner)
         self.assertNotIn("killall", inner)
 
+    def test_simulation_dhclient_identity_converges_with_diagnostics(self) -> None:
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        self.assertIn('readlink -f "/proc/$pid/exe"', inner)
+        self.assertIn("process_has_exact_argument", inner)
+        for argument in ("-d", "-pf", "dhclient.pid", "-lf", "dhclient.leases", "-sf", "dhclient-hook", "hvr-sim-client"):
+            self.assertIn(argument, inner)
+        self.assertIn('readlink "/proc/$pid/ns/net"', inner)
+        self.assertIn("simulation_client_netns", inner)
+        self.assertIn("for _attempt in {1..50}", inner)
+        self.assertIn("identity_ready", inner)
+        self.assertIn("report_simulation_dhclient_identity", inner)
+        for diagnostic in ("expected exe", "actual exe", "expected cmdline args", "actual cmdline", "expected netns", "actual netns", "expected pidfile", "actual pidfile", "actual starttime"):
+            self.assertIn(diagnostic, inner)
+        self.assertIn("simulation_dhclient_starttime", inner)
+        self.assertIn("$22", inner)
+        self.assertNotIn("pgrep", inner)
+
     def test_host_execution_and_exact_owned_objects(self) -> None:
         topology = TOPOLOGY_COMMON.read_text(encoding="utf-8")
         self.assertIn('if [ "$DEPLOYMENT_MODE" = "physical" ]; then nft "$@"', topology)
