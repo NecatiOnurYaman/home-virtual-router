@@ -3,7 +3,9 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$(cd "$script_dir/../.." && pwd)"
 [ "$(id -u)" -eq 0 ] || { echo "error: physical simulation requires root" >&2; exit 1; }
-command -v unshare >/dev/null || { echo "error: unshare is required (util-linux)" >&2; exit 1; }
+for command in unshare nsenter; do
+  command -v "$command" >/dev/null || { echo "error: $command is required (util-linux)" >&2; exit 1; }
+done
 temporary="$(mktemp -d /tmp/hvr-physical-sim.XXXXXX)"
 cleanup() { rm -f -- "$temporary/router.env"; rmdir "$temporary" 2>/dev/null || true; }
 trap cleanup EXIT

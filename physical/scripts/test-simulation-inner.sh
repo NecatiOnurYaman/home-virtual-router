@@ -14,6 +14,8 @@ export HVR_INTERNAL_OUTER_MOUNT_NAMESPACE="$outer_mount_namespace"
 simulation_ipfix_result=/run/home-virtual-router/physical-simulation/ipfix-result.json
 simulation_ipfix_ready=/run/home-virtual-router/physical-simulation/ipfix-ready
 simulation_ipfix_traffic=/run/home-virtual-router/physical-simulation/ipfix-traffic-start
+simulation_metrics_result=/run/home-virtual-router/physical-simulation/metrics-result.json
+simulation_metrics_error=/run/home-virtual-router/physical-simulation/metrics-error.log
 check() {
   local label="$1"
   shift
@@ -218,9 +220,52 @@ check_ipfix() {
   shift
   check "$label" "$@" || { report_ipfix_failure; return 1; }
 }
+report_metrics_failure() {
+  local exporter_pid="<absent>" exporter_netns="<absent>"
+  [ ! -r "$METRICS_EXPORT_PID_FILE" ] || exporter_pid="$(cat "$METRICS_EXPORT_PID_FILE")"
+  case "$exporter_pid" in *[!0-9]*|'') ;; *) exporter_netns="$(readlink "/proc/$exporter_pid/ns/net" 2>/dev/null || echo '<exited>')" ;; esac
+  printf 'metrics failure diagnostic:\n  deployment mode: %s\n  harness netns: %s\n  router context netns: %s\n  configured LAN: %s\n  configured WAN: %s\n  exporter PID: %s\n  exporter netns: %s\n  interfaces visible in router context:\n' \
+    "$DEPLOYMENT_MODE" "$(readlink /proc/self/ns/net)" "$(router_context_namespace_identity 2>/dev/null || echo '<unreadable>')" \
+    "$ROUTER_LAN_INTERFACE" "$ROUTER_WAN_INTERFACE" "$exporter_pid" "$exporter_netns" >&2
+  router_context_prefix
+  "${ROUTER_CONTEXT_PREFIX[@]}" ip -o link show >&2 || true
+  echo 'metrics collector stderr:' >&2
+  sed 's/^/  /' "$simulation_metrics_error" >&2 2>/dev/null || echo '  <absent>' >&2
+  echo 'metrics exporter log tail:' >&2
+  tail -n 30 "$METRICS_EXPORT_LOG_FILE" >&2 2>/dev/null || echo '  <absent>' >&2
+}
+collect_metrics_snapshot() {
+  rm -f -- "$simulation_metrics_result" "$simulation_metrics_error"
+  if ! "$repo_dir/lab/scripts/show-metrics.sh" >"$simulation_metrics_result" 2>"$simulation_metrics_error"; then
+    report_metrics_failure
+    return 1
+  fi
+  python3 -m json.tool "$simulation_metrics_result" >/dev/null 2>>"$simulation_metrics_error" || {
+    report_metrics_failure
+    return 1
+  }
+}
 metrics_role_ok() {
-  "$repo_dir/lab/scripts/show-metrics.sh" |
-    python3 -c 'import json,sys; role,name=sys.argv[1:]; d=json.load(sys.stdin); m=d["router"]["metrics"]; pairs={(x["interface"]["role"],x["interface"]["name"]) for x in m if "interface" in x}; assert (role,name) in pairs' "$1" "$2"
+  python3 -c 'import json,sys; role,name=sys.argv[2:]; d=json.load(open(sys.argv[1])); m=d["router"]["metrics"]; pairs={(x["interface"]["role"],x["interface"]["name"]) for x in m if "interface" in x}; raise SystemExit(0 if (role,name) in pairs else 1)' \
+    "$simulation_metrics_result" "$1" "$2"
+}
+metrics_system_ok() {
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); names={x["name"] for x in d["router"]["metrics"]}; expected={"system.uptime_seconds","system.cpu.utilization_ratio","system.memory.total_bytes","system.memory.available_bytes","system.memory.utilization_ratio"}; raise SystemExit(0 if expected <= names else 1)' "$simulation_metrics_result"
+}
+metrics_interfaces_ok() {
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); m=d["router"]["metrics"]; expected={"interface.rx_bytes","interface.tx_bytes","interface.rx_packets","interface.tx_packets","interface.rx_errors","interface.tx_errors","interface.rx_drops","interface.tx_drops","interface.operstate"}; actual={(x["interface"]["role"],x["name"]) for x in m if "interface" in x}; raise SystemExit(0 if all((role,name) in actual for role in ("lan","wan") for name in expected) else 1)' "$simulation_metrics_result"
+}
+metrics_collector_context_ok() {
+  [ "$(router_context_namespace_identity)" = "$(readlink /proc/1/ns/net)" ]
+}
+metrics_exporter_context_ok() {
+  local pid
+  pid="$(read_project_pid "$METRICS_EXPORT_PID_FILE")" || return 1
+  [ "$(readlink "/proc/$pid/ns/net")" = "$(router_context_namespace_identity)" ]
+}
+metrics_exporter_collection_healthy() {
+  ! grep -F 'configured lan interface is absent' "$METRICS_EXPORT_LOG_FILE" >/dev/null 2>&1 &&
+    ! grep -F 'configured wan interface is absent' "$METRICS_EXPORT_LOG_FILE" >/dev/null 2>&1
 }
 runtime_status_physical() { "$repo_dir/lab/scripts/runtime-status.sh" | grep -F -x 'Recorded deployment: physical' >/dev/null; }
 physical_runtime_absent() {
@@ -396,9 +441,17 @@ check "IPFIX data record decoded" ipfix_result_field records 1
 check "IPFIX required template fields" ipfix_result_field required_fields_complete true
 check "IPFIX pre-NAT client source preserved" ipfix_result_field client_source_preserved true
 check "IPFIX exact fresh ICMP record observed" ipfix_result_field expected_record_seen true
+check "metrics collector physical-router network context" metrics_collector_context_ok
+if ! collect_metrics_snapshot; then
+  check "metrics collector invocation" false
+fi
 check "metrics LAN role hvr-sim-lan" metrics_role_ok lan hvr-sim-lan
 check "metrics WAN role hvr-sim-wan" metrics_role_ok wan hvr-sim-wan
+check "metrics system metrics present" metrics_system_ok
+check "metrics LAN/WAN interface metrics present" metrics_interfaces_ok
 check "metrics exporter process identity" metrics_exporter_running
+check "metrics exporter physical-router network context" metrics_exporter_context_ok
+check "metrics exporter collection health" metrics_exporter_collection_healthy
 check "repeated runtime-start" "$repo_dir/lab/scripts/runtime-start.sh"
 check "runtime-status reports physical deployment" runtime_status_physical
 check "runtime-check" "$repo_dir/lab/scripts/runtime-check.sh"

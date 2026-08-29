@@ -708,6 +708,24 @@ process_is_running() {
   [ "$state" != "Z" ]
 }
 
+# Populate ROUTER_CONTEXT_PREFIX with the command prefix for the configured router's
+# network context. The simulation target is fixed to its private PID-1 context;
+# callers cannot select an arbitrary production namespace.
+router_context_prefix() {
+  if [ "$DEPLOYMENT_MODE" != physical ]; then
+    ROUTER_CONTEXT_PREFIX=(ip netns exec "$ROUTER_NAMESPACE")
+  elif [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-}" = 1 ]; then
+    ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --)
+  else
+    ROUTER_CONTEXT_PREFIX=()
+  fi
+}
+
+router_context_namespace_identity() {
+  router_context_prefix
+  "${ROUTER_CONTEXT_PREFIX[@]}" readlink /proc/self/ns/net
+}
+
 process_is_pmacctd() {
   local pid="$1" executable
   [ -e "/proc/$pid/exe" ] || return 1
@@ -718,11 +736,7 @@ process_is_pmacctd() {
 process_is_in_router_namespace() {
   local pid="$1" process_netns router_netns
   process_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null)" || return 1
-  if [ "$DEPLOYMENT_MODE" = "physical" ]; then
-    router_netns="$(readlink /proc/self/ns/net 2>/dev/null)" || return 1
-  else
-    router_netns="$(ip netns exec "$ROUTER_NAMESPACE" readlink /proc/self/ns/net 2>/dev/null)" || return 1
-  fi
+  router_netns="$(router_context_namespace_identity 2>/dev/null)" || return 1
   [ "$process_netns" = "$router_netns" ]
 }
 

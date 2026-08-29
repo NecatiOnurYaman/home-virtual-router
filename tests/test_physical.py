@@ -246,6 +246,30 @@ false
             self.assertIn(stable_property, plugin_identity)
         self.assertIn("receiver result: not started or result file not present", inner)
 
+    def test_physical_metrics_use_router_context_with_clean_diagnostics(self) -> None:
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        show = (ROOT / "lab/scripts/show-metrics.sh").read_text(encoding="utf-8")
+        exporter = (ROOT / "lab/scripts/enable-metrics-export.sh").read_text(encoding="utf-8")
+        common = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+        for check in (
+            "metrics collector physical-router network context",
+            "metrics LAN role hvr-sim-lan", "metrics WAN role hvr-sim-wan",
+            "metrics system metrics present", "metrics LAN/WAN interface metrics present",
+            "metrics exporter process identity", "metrics exporter physical-router network context",
+            "metrics exporter collection health",
+        ):
+            self.assertIn(check, inner)
+        self.assertIn("router_context_prefix", show)
+        self.assertIn("router_context_prefix", exporter)
+        self.assertIn('ROUTER_CONTEXT_PREFIX=(ip netns exec "$ROUTER_NAMESPACE")', common)
+        self.assertIn("ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --)", common)
+        self.assertIn("ROUTER_CONTEXT_PREFIX=()", common)
+        self.assertNotIn("hvr-sim", show + exporter)
+        self.assertIn('>"$simulation_metrics_result" 2>"$simulation_metrics_error"', inner)
+        self.assertLess(inner.index("collect_metrics_snapshot"), inner.index("metrics_role_ok lan"))
+        self.assertIn("interfaces visible in router context", inner)
+        self.assertNotIn("json.load(sys.stdin)", inner)
+
     def test_simulation_client_is_prepared_and_bounded_safely(self) -> None:
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
         self.assertLess(inner.index("ip link set hvr-sim-client netns"), inner.index("ip -n hvr-sim-client-ns link set hvr-sim-client up"))

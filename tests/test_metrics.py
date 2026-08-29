@@ -164,13 +164,24 @@ class MetricsCommandTests(unittest.TestCase):
     def test_wrapper_collects_inside_router_namespace_with_configured_roles(self) -> None:
         root = Path(__file__).resolve().parents[1]
         wrapper = (root / "lab/scripts/show-metrics.sh").read_text(encoding="utf-8")
-        self.assertIn('ip netns exec "$ROUTER_NAMESPACE"', wrapper)
+        common = (root / "lab/scripts/topology-common.sh").read_text(encoding="utf-8")
+        self.assertIn("router_context_prefix", wrapper)
+        self.assertIn('ROUTER_CONTEXT_PREFIX=(ip netns exec "$ROUTER_NAMESPACE")', common)
+        self.assertIn("ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --)", common)
+        self.assertIn("ROUTER_CONTEXT_PREFIX=()", common)
         self.assertIn('--interface "lan=$ROUTER_LAN_INTERFACE"', wrapper)
         self.assertIn('--interface "wan=$ROUTER_WAN_INTERFACE"', wrapper)
         self.assertIn('--interface "telemetry=$TELEMETRY_ROUTER_INTERFACE"', wrapper)
         self.assertNotIn('--interface "loopback=', wrapper)
         for forbidden in ("nft ", "route add", "route del", "sysctl -w", "systemctl", "pkill", "killall"):
             self.assertNotIn(forbidden, wrapper)
+
+    def test_metrics_exporter_uses_same_router_context_abstraction(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        exporter = (root / "lab/scripts/enable-metrics-export.sh").read_text(encoding="utf-8")
+        self.assertIn("router_context_prefix", exporter)
+        self.assertIn('prefix=("${ROUTER_CONTEXT_PREFIX[@]}" env "PYTHONPATH=$HVR_REPO_DIR")', exporter)
+        self.assertNotIn("hvr-sim", exporter)
 
     def test_metrics_show_keeps_stdout_machine_readable(self) -> None:
         root = Path(__file__).resolve().parents[1]

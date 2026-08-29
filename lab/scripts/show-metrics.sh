@@ -17,11 +17,12 @@ if [ "$DEPLOYMENT_MODE" = "physical" ]; then
   # shellcheck source=../../physical/scripts/physical-common.sh
   source "$script_dir/../../physical/scripts/physical-common.sh"
   require_physical_authorization
-  ip link show dev "$ROUTER_WAN_INTERFACE" >/dev/null 2>&1 || die "configured WAN interface is absent: $ROUTER_WAN_INTERFACE"
-  ip link show dev "$ROUTER_LAN_INTERFACE" >/dev/null 2>&1 || die "configured LAN interface is absent: $ROUTER_LAN_INTERFACE"
+  router_context_prefix
+  "${ROUTER_CONTEXT_PREFIX[@]}" ip link show dev "$ROUTER_WAN_INTERFACE" >/dev/null 2>&1 || die "configured WAN interface is absent: $ROUTER_WAN_INTERFACE"
+  "${ROUTER_CONTEXT_PREFIX[@]}" ip link show dev "$ROUTER_LAN_INTERFACE" >/dev/null 2>&1 || die "configured LAN interface is absent: $ROUTER_LAN_INTERFACE"
   command=(env PYTHONPATH="$HVR_REPO_DIR" python3 "$HVR_REPO_DIR/router/scripts/collect_metrics.py" --interface "lan=$ROUTER_LAN_INTERFACE" --interface "wan=$ROUTER_WAN_INTERFACE")
   [ "$PHYSICAL_TELEMETRY_INTERFACE" = none ] || command+=(--interface "telemetry=$PHYSICAL_TELEMETRY_INTERFACE")
-  "${command[@]}"
+  "${ROUTER_CONTEXT_PREFIX[@]}" "${command[@]}"
   exit 0
 fi
 require_lab_environment
@@ -33,7 +34,8 @@ ip -n "$ROUTER_NAMESPACE" link show dev "$ROUTER_LAN_INTERFACE" >/dev/null 2>&1 
 ip -n "$ROUTER_NAMESPACE" link show dev "$TELEMETRY_ROUTER_INTERFACE" >/dev/null 2>&1 ||
   die "configured telemetry interface is absent: $TELEMETRY_ROUTER_INTERFACE; enable the R9 observability link"
 
-ip netns exec "$ROUTER_NAMESPACE" env PYTHONPATH="$HVR_REPO_DIR" \
+router_context_prefix
+"${ROUTER_CONTEXT_PREFIX[@]}" env PYTHONPATH="$HVR_REPO_DIR" \
   python3 "$HVR_REPO_DIR/router/scripts/collect_metrics.py" \
   --interface "lan=$ROUTER_LAN_INTERFACE" \
   --interface "wan=$ROUTER_WAN_INTERFACE" \
