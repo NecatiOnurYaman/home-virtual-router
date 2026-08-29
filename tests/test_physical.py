@@ -171,7 +171,7 @@ false
         for proof in (
             "dhclient -4 -d", "client_address=", "route show default",
             "tcpdump", "ping -c 2", "dig +time=2", "nat_rule_exists",
-            "filter_rules_exist", "IPFIX_CONFIG_FILE", "show-metrics.sh",
+            "filter_rules_exist", "pcap_interface: hvr-sim-lan", "show-metrics.sh",
             "runtime-status.sh", "runtime-check.sh",
         ):
             self.assertIn(proof, inner)
@@ -180,7 +180,7 @@ false
             "IPv4 forwarding", "exact HVR NAT masquerade rule",
             "complete R5 forwarding firewall rule set", "dynamic DHCP lease",
             "DHCP default gateway", "DNS query", "routed client ICMP",
-            "upstream observed NAT source", "IPFIX process and LAN-side capture",
+            "upstream observed NAT source", "IPFIX pmacctd and nfprobe processes exist",
             "metrics LAN role", "metrics WAN role", "metrics exporter process identity",
             "repeated runtime-start", "runtime-status reports physical deployment",
             "runtime-check", "first runtime-stop", "second runtime-stop",
@@ -197,6 +197,28 @@ false
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
         self.assertIn("runtime deployment state is physical", inner)
         self.assertIn("--field deployment", inner)
+
+    def test_physical_ipfix_acceptance_uses_r8_decoder_and_fresh_traffic(self) -> None:
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        for check in (
+            "IPFIX project process identity", "IPFIX physical-router network context",
+            "IPFIX capture interface hvr-sim-lan", "IPFIX IPv4 capture filter",
+            "IPFIX nfprobe plugin", "IPFIX version 10 configuration",
+            "IPFIX collector destination 203.0.113.1:4739", "IPFIX receiver readiness",
+            "fresh LAN-to-WAN traffic after IPFIX receiver readiness", "IPFIX UDP export decoded",
+            "IPFIX template set decoded", "IPFIX data set decoded", "IPFIX data record decoded",
+            "IPFIX pre-NAT client source preserved", "IPFIX LAN client to upstream record",
+        ):
+            self.assertIn(check, inner)
+        self.assertIn('pcap_interface: hvr-sim-lan', inner)
+        self.assertIn('pcap_filter: ip', inner)
+        self.assertIn('plugins: nfprobe[hvr]', inner)
+        self.assertIn('nfprobe_version[hvr]: 10', inner)
+        self.assertIn('nfprobe_receiver[hvr]: 203.0.113.1:4739', inner)
+        self.assertIn('python3 "$IPFIX_RECEIVER"', inner)
+        self.assertLess(inner.index("IPFIX receiver readiness"), inner.index("fresh LAN-to-WAN traffic after IPFIX receiver readiness"))
+        self.assertIn("--timeout 12", inner)
+        self.assertIn("report_ipfix_failure", inner)
 
     def test_simulation_client_is_prepared_and_bounded_safely(self) -> None:
         inner = SIMULATION_INNER.read_text(encoding="utf-8")

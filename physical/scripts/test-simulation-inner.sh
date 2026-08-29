@@ -11,6 +11,9 @@ export HVR_INTERNAL_PHYSICAL_SIMULATION=1
 export HVR_INTERNAL_SIMULATION_CONFIG="$simulation_config"
 export HVR_INTERNAL_OUTER_NET_NAMESPACE="$outer_net_namespace"
 export HVR_INTERNAL_OUTER_MOUNT_NAMESPACE="$outer_mount_namespace"
+simulation_ipfix_result=/run/home-virtual-router/physical-simulation/ipfix-result.json
+simulation_ipfix_ready=/run/home-virtual-router/physical-simulation/ipfix-ready
+simulation_ipfix_traffic=/run/home-virtual-router/physical-simulation/ipfix-traffic-start
 check() {
   local label="$1"
   shift
@@ -123,10 +126,48 @@ report_dhcp_failure() {
   echo 'DHCP/ARP capture:' >&2; tail -n 80 /run/home-virtual-router/physical-simulation/dhcp-packets.log >&2 || true
 }
 dns_query_ok() { ip netns exec hvr-sim-client-ns dig +time=2 +tries=1 @10.0.0.1 example.test A +short | grep -F -x 192.0.2.123 >/dev/null; }
-ipfix_capture_ok() {
-  pmacctd_running && assert_single_project_pmacct_pair >/dev/null 2>&1 &&
-    grep -F -x 'interface=hvr-sim-lan' "$IPFIX_CONFIG_FILE" >/dev/null &&
-    grep -F -x 'nfprobe_version[hvr]: 10' "$IPFIX_CONFIG_FILE" >/dev/null
+ipfix_process_identity_ok() {
+  local pid
+  pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
+  process_is_pmacctd "$pid" && project_process_matches "$pid" pmacctd "$IPFIX_CONFIG_FILE" &&
+    [ "$(process_starttime "$pid")" = "$(cat "$IPFIX_CORE_STARTTIME_FILE")" ]
+}
+ipfix_process_context_ok() {
+  local pid
+  pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
+  [ "$(readlink "/proc/$pid/ns/net")" = "$(readlink /proc/self/ns/net)" ]
+}
+ipfix_capture_interface_ok() { grep -F -x 'pcap_interface: hvr-sim-lan' "$IPFIX_CONFIG_FILE" >/dev/null; }
+ipfix_ipv4_capture_ok() { grep -F -x 'pcap_filter: ip' "$IPFIX_CONFIG_FILE" >/dev/null; }
+ipfix_plugin_ok() { grep -F -x 'plugins: nfprobe[hvr]' "$IPFIX_CONFIG_FILE" >/dev/null; }
+ipfix_version_ok() { grep -F -x 'nfprobe_version[hvr]: 10' "$IPFIX_CONFIG_FILE" >/dev/null; }
+ipfix_destination_ok() { grep -F -x 'nfprobe_receiver[hvr]: 203.0.113.1:4739' "$IPFIX_CONFIG_FILE" >/dev/null; }
+ipfix_result_field() {
+  python3 -c 'import json,sys; value=json.load(open(sys.argv[1]))[sys.argv[2]]; expected=sys.argv[3]; assert (isinstance(value,int) and value >= int(expected)) if expected.isdigit() else value is (expected == "true")' "$simulation_ipfix_result" "$1" "$2"
+}
+ipfix_pre_nat_record_ok() {
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); source,destination=sys.argv[2:]; assert any(r.get("sourceIPv4Address")==source and r.get("destinationIPv4Address")==destination for r in d["sample_records"])' \
+    "$simulation_ipfix_result" "$client_ip" 203.0.113.1
+}
+report_ipfix_failure() {
+  local pid="<absent>" actual_exe="<absent>" actual_cmdline="<absent>" actual_netns="<absent>" actual_starttime="<absent>"
+  pid="$(cat "$IPFIX_PID_FILE" 2>/dev/null || echo '<absent>')"
+  if case "$pid" in *[!0-9]*|'') false ;; *) true ;; esac && [ -e "/proc/$pid/exe" ]; then
+    actual_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo '<unreadable>')"
+    actual_cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
+    actual_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null || echo '<unreadable>')"
+    actual_starttime="$(process_starttime "$pid" 2>/dev/null || echo '<unreadable>')"
+  fi
+  printf 'IPFIX failure diagnostic:\n  PID: %s\n  executable: %s\n  cmdline: %s\n  process netns: %s\n  physical-router netns: %s\n  process starttime: %s\n  expected capture: hvr-sim-lan\n  expected collector: 203.0.113.1:4739\n  expected version: 10\n' \
+    "$pid" "$actual_exe" "$actual_cmdline" "$actual_netns" "$(readlink /proc/self/ns/net)" "$actual_starttime" >&2
+  echo 'generated pmacct configuration:' >&2; sed 's/^/  /' "$IPFIX_CONFIG_FILE" >&2 || true
+  echo 'pmacct log tail:' >&2; tail -n 60 "$IPFIX_LOG_FILE" >&2 || true
+  echo 'receiver result:' >&2; cat "$simulation_ipfix_result" >&2 || true
+}
+check_ipfix() {
+  local label="$1"
+  shift
+  check "$label" "$@" || { report_ipfix_failure; return 1; }
 }
 metrics_role_ok() {
   "$repo_dir/lab/scripts/show-metrics.sh" |
@@ -142,6 +183,10 @@ cleanup() {
   set +e
   "$repo_dir/lab/scripts/runtime-stop.sh" >/dev/null 2>&1
   [ -z "${dhcp_capture_pid:-}" ] || { kill "$dhcp_capture_pid" 2>/dev/null; wait "$dhcp_capture_pid" 2>/dev/null; }
+  if [ -n "${simulation_ipfix_receiver_pid:-}" ] && kill -0 "$simulation_ipfix_receiver_pid" 2>/dev/null; then
+    project_process_matches "$simulation_ipfix_receiver_pid" python3 "$IPFIX_RECEIVER" && kill "$simulation_ipfix_receiver_pid" 2>/dev/null
+    wait "$simulation_ipfix_receiver_pid" 2>/dev/null
+  fi
   [ -z "${simulation_dhclient_pid:-}" ] || stop_simulation_dhclient "$simulation_dhclient_pid" "${simulation_dhclient_starttime:-}" 2>/dev/null
   [ ! -s /run/home-virtual-router/physical-simulation/upstream-dnsmasq.pid ] ||
     kill "$(cat /run/home-virtual-router/physical-simulation/upstream-dnsmasq.pid)" 2>/dev/null
@@ -264,7 +309,42 @@ for _attempt in {1..50}; do grep -F 'listening on hvr-sim-up' /run/home-virtual-
 check "NAT observation capture readiness" test "$capture_ready" -eq 1
 check "routed client ICMP" ip netns exec hvr-sim-client-ns ping -c 2 -W 2 203.0.113.1
 check "upstream observed NAT source 203.0.113.2" wait "$capture_pid"
-check "IPFIX process and LAN-side capture" ipfix_capture_ok
+check_ipfix "IPFIX pmacctd and nfprobe processes exist" pmacctd_running
+check_ipfix "IPFIX project process identity" ipfix_process_identity_ok
+check_ipfix "IPFIX physical-router network context" ipfix_process_context_ok
+check_ipfix "IPFIX capture interface hvr-sim-lan" ipfix_capture_interface_ok
+check_ipfix "IPFIX IPv4 capture filter" ipfix_ipv4_capture_ok
+check_ipfix "IPFIX nfprobe plugin" ipfix_plugin_ok
+check_ipfix "IPFIX version 10 configuration" ipfix_version_ok
+check_ipfix "IPFIX collector destination 203.0.113.1:4739" ipfix_destination_ok
+rm -f -- "$simulation_ipfix_result" "$simulation_ipfix_ready" "$simulation_ipfix_traffic"
+ip netns exec hvr-sim-upstream-ns python3 "$IPFIX_RECEIVER" \
+  --bind 203.0.113.1 --port 4739 --client "$client_ip" \
+  --traffic-start "$simulation_ipfix_traffic" --output "$simulation_ipfix_result" \
+  --ready "$simulation_ipfix_ready" --timeout 12 &
+simulation_ipfix_receiver_pid=$!
+receiver_ready=0
+for _attempt in {1..50}; do
+  [ -e "$simulation_ipfix_ready" ] && { receiver_ready=1; break; }
+  kill -0 "$simulation_ipfix_receiver_pid" 2>/dev/null || break
+  sleep 0.1
+done
+check_ipfix "IPFIX receiver readiness" test "$receiver_ready" -eq 1
+touch "$simulation_ipfix_traffic"
+check "fresh LAN-to-WAN traffic after IPFIX receiver readiness" \
+  ip netns exec hvr-sim-client-ns ping -c 2 -W 2 203.0.113.1
+receiver_status=0
+wait "$simulation_ipfix_receiver_pid" || receiver_status=$?
+simulation_ipfix_receiver_pid=""
+[ "$receiver_status" -eq 0 ] || report_ipfix_failure
+check "IPFIX UDP export decoded" test "$receiver_status" -eq 0
+check "IPFIX datagram observed" ipfix_result_field datagrams 1
+check "IPFIX template set decoded" ipfix_result_field template_sets 1
+check "IPFIX data set decoded" ipfix_result_field data_sets 1
+check "IPFIX data record decoded" ipfix_result_field records 1
+check "IPFIX required template fields" ipfix_result_field required_fields_complete true
+check "IPFIX pre-NAT client source preserved" ipfix_result_field client_source_preserved true
+check "IPFIX LAN client to upstream record" ipfix_pre_nat_record_ok
 check "metrics LAN role hvr-sim-lan" metrics_role_ok lan hvr-sim-lan
 check "metrics WAN role hvr-sim-wan" metrics_role_ok wan hvr-sim-wan
 check "metrics exporter process identity" metrics_exporter_running
