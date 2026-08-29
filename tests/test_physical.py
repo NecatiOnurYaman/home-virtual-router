@@ -207,7 +207,7 @@ false
             "IPFIX collector destination 203.0.113.1:4739", "IPFIX receiver readiness",
             "fresh LAN-to-WAN traffic after IPFIX receiver readiness", "IPFIX UDP export decoded",
             "IPFIX template set decoded", "IPFIX data set decoded", "IPFIX data record decoded",
-            "IPFIX pre-NAT client source preserved", "IPFIX LAN client to upstream record",
+            "IPFIX pre-NAT client source preserved", "IPFIX exact fresh ICMP record observed",
         ):
             self.assertIn(check, inner)
         self.assertIn('pcap_interface: hvr-sim-lan', inner)
@@ -218,7 +218,15 @@ false
         self.assertIn('python3 "$IPFIX_RECEIVER"', inner)
         self.assertLess(inner.index("IPFIX receiver readiness"), inner.index("fresh LAN-to-WAN traffic after IPFIX receiver readiness"))
         self.assertIn("--timeout 12", inner)
+        self.assertIn('--expect-source "$client_ip"', inner)
+        self.assertIn("--expect-destination 203.0.113.1", inner)
+        self.assertIn("--expect-protocol 1", inner)
+        self.assertIn("ipfix_result_field expected_record_seen true", inner)
+        self.assertNotIn("ipfix_pre_nat_record_ok", inner)
         self.assertIn("report_ipfix_failure", inner)
+        self.assertIn("source/destination pairs", inner)
+        self.assertIn("sample_records_truncated", inner)
+        self.assertNotIn("assert any(r.get", inner)
 
     def test_physical_ipfix_identity_allows_rewritten_process_titles(self) -> None:
         inner = SIMULATION_INNER.read_text(encoding="utf-8")

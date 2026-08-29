@@ -929,6 +929,48 @@ class R8IpfixTests(unittest.TestCase):
         with self.assertRaises(receiver_module.IPFIXValidationError):
             validator.consume(struct.pack("!HHIII", 10, 16, 0, 0, 43))
 
+    def test_receiver_exact_record_search_uses_all_records_not_diagnostic_sample(self) -> None:
+        receiver_spec = importlib.util.spec_from_file_location("ipfix_receiver_exact", IPFIX_RECEIVER)
+        receiver_module = importlib.util.module_from_spec(receiver_spec)
+        assert receiver_spec.loader
+        receiver_spec.loader.exec_module(receiver_module)
+        validator = receiver_module.IPFIXValidator()
+        validator.records = [
+            {
+                "sourceIPv4Address": "10.0.0.100",
+                "destinationIPv4Address": f"192.0.2.{index}",
+                "protocolIdentifier": 17,
+            }
+            for index in range(1, 9)
+        ]
+        validator.records.append({
+            "sourceIPv4Address": "10.0.0.100",
+            "destinationIPv4Address": "203.0.113.1",
+            "protocolIdentifier": 1,
+        })
+
+        generic = validator.result("10.0.0.100")
+        self.assertTrue(generic["client_source_preserved"])
+        self.assertNotIn("expected_record_seen", generic)
+        self.assertEqual(len(generic["sample_records"]), 8)
+
+        exact = validator.result(
+            "10.0.0.100", expected_source="10.0.0.100",
+            expected_destination="203.0.113.1", expected_protocol=1,
+        )
+        self.assertTrue(exact["expected_record_seen"])
+        self.assertEqual(exact["expected_record"]["protocolIdentifier"], 1)
+        self.assertIn("10.0.0.100 -> 203.0.113.1", exact["source_destination_pairs"])
+        self.assertEqual(exact["sample_records_retained"], 8)
+        self.assertTrue(exact["sample_records_truncated"])
+        self.assertNotIn("10.0.0.100 -> 203.0.113.1", exact["sample_source_destination_pairs"])
+
+        absent = validator.result(
+            "10.0.0.100", expected_source="10.0.0.100",
+            expected_destination="203.0.113.2", expected_protocol=1,
+        )
+        self.assertFalse(absent["expected_record_seen"])
+
     def test_receiver_rejects_non_ipfix_version(self) -> None:
         receiver_spec = importlib.util.spec_from_file_location("ipfix_receiver_bad", IPFIX_RECEIVER)
         receiver_module = importlib.util.module_from_spec(receiver_spec)

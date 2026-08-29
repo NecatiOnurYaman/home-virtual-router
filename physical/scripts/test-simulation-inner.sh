@@ -165,10 +165,6 @@ ipfix_destination_ok() { grep -F -x 'nfprobe_receiver[hvr]: 203.0.113.1:4739' "$
 ipfix_result_field() {
   python3 -c 'import json,sys; value=json.load(open(sys.argv[1]))[sys.argv[2]]; expected=sys.argv[3]; assert (isinstance(value,int) and value >= int(expected)) if expected.isdigit() else value is (expected == "true")' "$simulation_ipfix_result" "$1" "$2"
 }
-ipfix_pre_nat_record_ok() {
-  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); source,destination=sys.argv[2:]; assert any(r.get("sourceIPv4Address")==source and r.get("destinationIPv4Address")==destination for r in d["sample_records"])' \
-    "$simulation_ipfix_result" "$client_ip" 203.0.113.1
-}
 report_ipfix_failure() {
   local pid="<absent>" actual_exe="<absent>" actual_cmdline="<absent>" actual_netns="<absent>" actual_starttime="<absent>"
   local plugin_pid="<absent>" plugin_exe="<absent>" plugin_cmdline="<absent>" plugin_parent="<absent>" plugin_netns="<absent>"
@@ -192,7 +188,27 @@ report_ipfix_failure() {
   echo 'generated pmacct configuration:' >&2; sed 's/^/  /' "$IPFIX_CONFIG_FILE" >&2 || true
   echo 'pmacct log tail:' >&2; tail -n 60 "$IPFIX_LOG_FILE" >&2 || true
   if [ -r "$simulation_ipfix_result" ]; then
-    echo 'receiver result:' >&2; cat "$simulation_ipfix_result" >&2
+    python3 - "$simulation_ipfix_result" "$client_ip" <<'PY' >&2 || true
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as result_file:
+    result = json.load(result_file)
+print("receiver result summary:")
+print(f"  expected record: {sys.argv[2]} -> 203.0.113.1 protocol 1")
+for field in (
+    "datagrams", "template_sets", "data_sets", "records",
+    "sample_records_retained", "sample_records_truncated",
+):
+    print(f"  {field}: {result.get(field, '<absent>')}")
+print(f"  client source preserved: {result.get('client_source_preserved', '<absent>')}")
+print(f"  exact expected record seen: {result.get('expected_record_seen', '<absent>')}")
+print(f"  source addresses: {result.get('source_ipv4_addresses', [])}")
+print(f"  destination addresses: {result.get('destination_ipv4_addresses', [])}")
+print(f"  source/destination pairs: {result.get('source_destination_pairs', [])}")
+print(f"  sampled source/destination pairs: {result.get('sample_source_destination_pairs', [])}")
+print(f"  retained sample records: {result.get('sample_records', [])}")
+PY
   else
     echo 'receiver result: not started or result file not present' >&2
   fi
@@ -354,6 +370,7 @@ check_ipfix "IPFIX collector destination 203.0.113.1:4739" ipfix_destination_ok
 rm -f -- "$simulation_ipfix_result" "$simulation_ipfix_ready" "$simulation_ipfix_traffic"
 ip netns exec hvr-sim-upstream-ns python3 "$IPFIX_RECEIVER" \
   --bind 203.0.113.1 --port 4739 --client "$client_ip" \
+  --expect-source "$client_ip" --expect-destination 203.0.113.1 --expect-protocol 1 \
   --traffic-start "$simulation_ipfix_traffic" --output "$simulation_ipfix_result" \
   --ready "$simulation_ipfix_ready" --timeout 12 &
 simulation_ipfix_receiver_pid=$!
@@ -378,7 +395,7 @@ check "IPFIX data set decoded" ipfix_result_field data_sets 1
 check "IPFIX data record decoded" ipfix_result_field records 1
 check "IPFIX required template fields" ipfix_result_field required_fields_complete true
 check "IPFIX pre-NAT client source preserved" ipfix_result_field client_source_preserved true
-check "IPFIX LAN client to upstream record" ipfix_pre_nat_record_ok
+check "IPFIX exact fresh ICMP record observed" ipfix_result_field expected_record_seen true
 check "metrics LAN role hvr-sim-lan" metrics_role_ok lan hvr-sim-lan
 check "metrics WAN role hvr-sim-wan" metrics_role_ok wan hvr-sim-wan
 check "metrics exporter process identity" metrics_exporter_running

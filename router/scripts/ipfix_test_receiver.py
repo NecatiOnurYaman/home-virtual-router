@@ -126,12 +126,39 @@ class IPFIXValidator:
                 record[name] = int.from_bytes(raw, "big")
         return record
 
-    def result(self, expected_client: str) -> dict[str, object]:
+    def result(
+        self, expected_client: str, *, expected_source: str | None = None,
+        expected_destination: str | None = None, expected_protocol: int | None = None,
+    ) -> dict[str, object]:
         required = {
             1, 2, 4, 6, 7, 8, 11, 12, 152, 153,
         }
         template_fields = {element for fields in self.templates.values() for element, _length in fields}
-        return {
+        source_addresses = sorted({
+            str(record["sourceIPv4Address"]) for record in self.records if "sourceIPv4Address" in record
+        })
+        destination_addresses = sorted({
+            str(record["destinationIPv4Address"]) for record in self.records if "destinationIPv4Address" in record
+        })
+        pairs = sorted({
+            (str(record["sourceIPv4Address"]), str(record["destinationIPv4Address"]))
+            for record in self.records
+            if "sourceIPv4Address" in record and "destinationIPv4Address" in record
+        })
+        sample_records = self.records[:8]
+        sample_pairs = sorted({
+            (str(record["sourceIPv4Address"]), str(record["destinationIPv4Address"]))
+            for record in sample_records
+            if "sourceIPv4Address" in record and "destinationIPv4Address" in record
+        })
+        expected_matches = [
+            record for record in self.records
+            if expected_source is not None
+            and record.get("sourceIPv4Address") == expected_source
+            and record.get("destinationIPv4Address") == expected_destination
+            and record.get("protocolIdentifier") == expected_protocol
+        ]
+        result: dict[str, object] = {
             "datagrams": self.datagrams,
             "version": 10,
             "template_sets": self.template_sets,
@@ -144,8 +171,20 @@ class IPFIXValidator:
             "client_source_preserved": any(
                 record.get("sourceIPv4Address") == expected_client for record in self.records
             ),
-            "sample_records": self.records[:8],
+            "source_ipv4_addresses": source_addresses,
+            "destination_ipv4_addresses": destination_addresses,
+            "source_destination_pairs": [f"{source} -> {destination}" for source, destination in pairs],
+            "sample_records_retained": len(sample_records),
+            "sample_records_truncated": len(sample_records) < len(self.records),
+            "sample_source_destination_pairs": [
+                f"{source} -> {destination}" for source, destination in sample_pairs
+            ],
+            "sample_records": sample_records,
         }
+        if expected_source is not None:
+            result["expected_record_seen"] = bool(expected_matches)
+            result["expected_record"] = expected_matches[0] if expected_matches else None
+        return result
 
 
 def main() -> int:
@@ -157,7 +196,13 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--ready", required=True, type=Path)
     parser.add_argument("--timeout", type=float, default=12.0)
+    parser.add_argument("--expect-source")
+    parser.add_argument("--expect-destination")
+    parser.add_argument("--expect-protocol", type=int)
     args = parser.parse_args()
+    expected_values = (args.expect_source, args.expect_destination, args.expect_protocol)
+    if any(value is not None for value in expected_values) and not all(value is not None for value in expected_values):
+        parser.error("--expect-source, --expect-destination, and --expect-protocol must be used together")
 
     validator = IPFIXValidator()
     deadline = time.monotonic() + args.timeout
@@ -171,20 +216,29 @@ def main() -> int:
             except TimeoutError:
                 continue
             validator.consume(packet)
-            result = validator.result(args.client)
+            result = validator.result(
+                args.client, expected_source=args.expect_source,
+                expected_destination=args.expect_destination, expected_protocol=args.expect_protocol,
+            )
             if (
                 args.traffic_start.exists()
                 and result["template_sets"]
                 and result["data_sets"]
                 and result["required_fields_complete"]
-                and result["client_source_preserved"]
+                and (
+                    result.get("expected_record_seen", False)
+                    if args.expect_source is not None else result["client_source_preserved"]
+                )
             ):
                 started_at = args.traffic_start.stat().st_mtime
                 result["receive_latency_seconds"] = round(time.time() - started_at, 3)
                 args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
                 return 0
 
-    result = validator.result(args.client)
+    result = validator.result(
+        args.client, expected_source=args.expect_source,
+        expected_destination=args.expect_destination, expected_protocol=args.expect_protocol,
+    )
     started_at = args.traffic_start.stat().st_mtime
     result["receive_latency_seconds"] = round(time.time() - started_at, 3)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
