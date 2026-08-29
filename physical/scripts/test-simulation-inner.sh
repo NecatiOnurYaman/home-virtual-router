@@ -127,10 +127,30 @@ report_dhcp_failure() {
 }
 dns_query_ok() { ip netns exec hvr-sim-client-ns dig +time=2 +tries=1 @10.0.0.1 example.test A +short | grep -F -x 192.0.2.123 >/dev/null; }
 ipfix_process_identity_ok() {
-  local pid
+  local pid expected_executable actual_executable recorded_starttime
   pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
-  process_is_pmacctd "$pid" && project_process_matches "$pid" pmacctd "$IPFIX_CONFIG_FILE" &&
-    [ "$(process_starttime "$pid")" = "$(cat "$IPFIX_CORE_STARTTIME_FILE")" ]
+  process_is_running "$pid" && process_is_pmacctd "$pid" || return 1
+  expected_executable="$(readlink -f "$(command -v pmacctd)")" || return 1
+  actual_executable="$(readlink -f "/proc/$pid/exe")" || return 1
+  [ "$actual_executable" = "$expected_executable" ] || return 1
+  recorded_starttime="$(cat "$IPFIX_CORE_STARTTIME_FILE")" || return 1
+  [ "$(process_starttime "$pid")" = "$recorded_starttime" ] || return 1
+  [ -r "$IPFIX_CONFIG_FILE" ] && [ -r "$IPFIX_COMMAND_FILE" ] || return 1
+  grep -F -- "pmacctd -f $IPFIX_CONFIG_FILE" "$IPFIX_COMMAND_FILE" >/dev/null || return 1
+  grep -F -- "Reading configuration file '$IPFIX_CONFIG_FILE'." "$IPFIX_LOG_FILE" >/dev/null
+}
+ipfix_plugin_identity_ok() {
+  local core_pid plugin_pid expected_executable actual_executable recorded_starttime
+  core_pid="$(read_project_pid "$IPFIX_PID_FILE")" || return 1
+  plugin_pid="$(project_nfprobe_pids "$core_pid")" || return 1
+  [ "$(printf '%s\n' "$plugin_pid" | awk 'NF {count++} END {print count+0}')" -eq 1 ] || return 1
+  [ "$(awk '/^PPid:/ {print $2}' "/proc/$plugin_pid/status")" = "$core_pid" ] || return 1
+  expected_executable="$(readlink -f "$(command -v pmacctd)")" || return 1
+  actual_executable="$(readlink -f "/proc/$plugin_pid/exe")" || return 1
+  [ "$actual_executable" = "$expected_executable" ] || return 1
+  recorded_starttime="$(cat "$IPFIX_PLUGIN_STARTTIME_FILE")" || return 1
+  [ "$(process_starttime "$plugin_pid")" = "$recorded_starttime" ] || return 1
+  [ "$(readlink "/proc/$plugin_pid/ns/net")" = "$(readlink /proc/self/ns/net)" ]
 }
 ipfix_process_context_ok() {
   local pid
@@ -151,18 +171,31 @@ ipfix_pre_nat_record_ok() {
 }
 report_ipfix_failure() {
   local pid="<absent>" actual_exe="<absent>" actual_cmdline="<absent>" actual_netns="<absent>" actual_starttime="<absent>"
+  local plugin_pid="<absent>" plugin_exe="<absent>" plugin_cmdline="<absent>" plugin_parent="<absent>" plugin_netns="<absent>"
   pid="$(cat "$IPFIX_PID_FILE" 2>/dev/null || echo '<absent>')"
   if case "$pid" in *[!0-9]*|'') false ;; *) true ;; esac && [ -e "/proc/$pid/exe" ]; then
     actual_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo '<unreadable>')"
     actual_cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
     actual_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null || echo '<unreadable>')"
     actual_starttime="$(process_starttime "$pid" 2>/dev/null || echo '<unreadable>')"
+    plugin_pid="$(project_nfprobe_pids "$pid" 2>/dev/null | head -n 1)"
+    if case "$plugin_pid" in *[!0-9]*|'') false ;; *) true ;; esac && [ -e "/proc/$plugin_pid/exe" ]; then
+      plugin_exe="$(readlink -f "/proc/$plugin_pid/exe" 2>/dev/null || echo '<unreadable>')"
+      plugin_cmdline="$(tr '\0' ' ' < "/proc/$plugin_pid/cmdline")"
+      plugin_parent="$(awk '/^PPid:/ {print $2}' "/proc/$plugin_pid/status" 2>/dev/null || echo '<unreadable>')"
+      plugin_netns="$(readlink "/proc/$plugin_pid/ns/net" 2>/dev/null || echo '<unreadable>')"
+    fi
   fi
-  printf 'IPFIX failure diagnostic:\n  PID: %s\n  executable: %s\n  cmdline: %s\n  process netns: %s\n  physical-router netns: %s\n  process starttime: %s\n  expected capture: hvr-sim-lan\n  expected collector: 203.0.113.1:4739\n  expected version: 10\n' \
-    "$pid" "$actual_exe" "$actual_cmdline" "$actual_netns" "$(readlink /proc/self/ns/net)" "$actual_starttime" >&2
+  printf 'IPFIX failure diagnostic:\n  core PID: %s\n  core executable: %s\n  core title: %s\n  core netns: %s\n  physical-router netns: %s\n  core starttime: %s\n  nfprobe PID: %s\n  nfprobe executable: %s\n  nfprobe title: %s\n  nfprobe parent: %s\n  nfprobe netns: %s\n  expected capture: hvr-sim-lan\n  expected collector: 203.0.113.1:4739\n  expected version: 10\n' \
+    "$pid" "$actual_exe" "$actual_cmdline" "$actual_netns" "$(readlink /proc/self/ns/net)" "$actual_starttime" \
+    "$plugin_pid" "$plugin_exe" "$plugin_cmdline" "$plugin_parent" "$plugin_netns" >&2
   echo 'generated pmacct configuration:' >&2; sed 's/^/  /' "$IPFIX_CONFIG_FILE" >&2 || true
   echo 'pmacct log tail:' >&2; tail -n 60 "$IPFIX_LOG_FILE" >&2 || true
-  echo 'receiver result:' >&2; cat "$simulation_ipfix_result" >&2 || true
+  if [ -r "$simulation_ipfix_result" ]; then
+    echo 'receiver result:' >&2; cat "$simulation_ipfix_result" >&2
+  else
+    echo 'receiver result: not started or result file not present' >&2
+  fi
 }
 check_ipfix() {
   local label="$1"
@@ -310,7 +343,8 @@ check "NAT observation capture readiness" test "$capture_ready" -eq 1
 check "routed client ICMP" ip netns exec hvr-sim-client-ns ping -c 2 -W 2 203.0.113.1
 check "upstream observed NAT source 203.0.113.2" wait "$capture_pid"
 check_ipfix "IPFIX pmacctd and nfprobe processes exist" pmacctd_running
-check_ipfix "IPFIX project process identity" ipfix_process_identity_ok
+check_ipfix "IPFIX core process identity" ipfix_process_identity_ok
+check_ipfix "IPFIX nfprobe child process identity" ipfix_plugin_identity_ok
 check_ipfix "IPFIX physical-router network context" ipfix_process_context_ok
 check_ipfix "IPFIX capture interface hvr-sim-lan" ipfix_capture_interface_ok
 check_ipfix "IPFIX IPv4 capture filter" ipfix_ipv4_capture_ok

@@ -201,7 +201,7 @@ false
     def test_physical_ipfix_acceptance_uses_r8_decoder_and_fresh_traffic(self) -> None:
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
         for check in (
-            "IPFIX project process identity", "IPFIX physical-router network context",
+            "IPFIX core process identity", "IPFIX nfprobe child process identity", "IPFIX physical-router network context",
             "IPFIX capture interface hvr-sim-lan", "IPFIX IPv4 capture filter",
             "IPFIX nfprobe plugin", "IPFIX version 10 configuration",
             "IPFIX collector destination 203.0.113.1:4739", "IPFIX receiver readiness",
@@ -219,6 +219,24 @@ false
         self.assertLess(inner.index("IPFIX receiver readiness"), inner.index("fresh LAN-to-WAN traffic after IPFIX receiver readiness"))
         self.assertIn("--timeout 12", inner)
         self.assertIn("report_ipfix_failure", inner)
+
+    def test_physical_ipfix_identity_allows_rewritten_process_titles(self) -> None:
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        start = inner.index("ipfix_process_identity_ok()")
+        end = inner.index("ipfix_plugin_identity_ok()")
+        core_identity = inner[start:end]
+        self.assertNotIn("project_process_matches", core_identity)
+        self.assertNotIn("cmdline", core_identity)
+        for stable_property in (
+            "IPFIX_PID_FILE", "/proc/$pid/exe", "IPFIX_CORE_STARTTIME_FILE",
+            "IPFIX_CONFIG_FILE", "IPFIX_COMMAND_FILE", "Reading configuration file",
+        ):
+            self.assertIn(stable_property, core_identity)
+        plugin_end = inner.index("ipfix_process_context_ok()")
+        plugin_identity = inner[end:plugin_end]
+        for stable_property in ("project_nfprobe_pids", "PPid", "/proc/$plugin_pid/exe", "IPFIX_PLUGIN_STARTTIME_FILE", "/proc/$plugin_pid/ns/net"):
+            self.assertIn(stable_property, plugin_identity)
+        self.assertIn("receiver result: not started or result file not present", inner)
 
     def test_simulation_client_is_prepared_and_bounded_safely(self) -> None:
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
