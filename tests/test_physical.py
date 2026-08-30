@@ -74,6 +74,48 @@ class PhysicalSafetyTests(unittest.TestCase):
         accepted = self.run_function(definitions.replace("ACK=none", "ACK=enp2s0"), "physical_require_management_ack")
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
+    def test_exact_owned_management_route_allows_convergence_without_ack(self) -> None:
+        definitions = (
+            'PHYSICAL_WAN_INTERFACE=enp2s0; PHYSICAL_LAN_INTERFACE=enp3s0; '
+            'PHYSICAL_MANAGEMENT_INTERFACE_ACK=none; physical_default_route_interface(){ echo enp2s0; }; '
+            'physical_management_ownership_present(){ return 0; }; '
+            'physical_owned_management_route_verified(){ return 0; }'
+        )
+        result = self.run_function(definitions, "physical_require_management_ack")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_partial_or_drifted_management_ownership_fails_closed(self) -> None:
+        definitions = (
+            'PHYSICAL_WAN_INTERFACE=enp2s0; PHYSICAL_LAN_INTERFACE=enp3s0; '
+            'PHYSICAL_MANAGEMENT_INTERFACE_ACK=none; physical_default_route_interface(){ echo enp2s0; }; '
+            'physical_management_ownership_present(){ return 0; }; '
+            'physical_owned_management_route_verified(){ return 1; }'
+        )
+        result = self.run_function(definitions, "physical_require_management_ack")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ownership mismatch", result.stderr)
+
+    def test_management_ownership_proof_is_exact_and_live(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        proof = common[
+            common.index("physical_render_map()"):
+            common.index("physical_require_management_ack()")
+        ]
+        for evidence in (
+            "MAP_VERSION=2", "ROUTER_NETNS", "WAN_IFINDEX", "WAN_MAC", "LAN_IFINDEX", "LAN_MAC",
+            "WAN_ADDRESS", "WAN_GATEWAY", "LAN_ADDRESS", "PHYSICAL_DEFAULT_ROUTE_OWNED",
+            "physical_single_owned_default_route_exact", "PHYSICAL_RUNTIME_STATE",
+            "PHYSICAL_RUNTIME_CONFIG_SNAPSHOT", "--field deployment", "--field status",
+            "--field owned", "topology", "routing", "cmp -s",
+        ):
+            self.assertIn(evidence, proof)
+        self.assertIn("count==1 && exact==1", proof)
+        topology_health = common[
+            common.index("physical_topology_healthy()"):
+            common.index("physical_topology_absent()")
+        ]
+        self.assertIn("physical_map_matches_live_config", topology_health)
+
     def test_network_manager_managed_interface_is_rejected(self) -> None:
         definitions = 'nmcli(){ echo "GENERAL.STATE:100 (connected)"; }; networkctl(){ :; }'
         result = self.run_function(definitions, "physical_interface_unmanaged enp2s0")
@@ -182,7 +224,9 @@ false
             "DHCP default gateway", "DNS query", "routed client ICMP",
             "upstream observed NAT source", "IPFIX pmacctd and nfprobe processes exist",
             "metrics LAN role", "metrics WAN role", "metrics exporter process identity",
-            "repeated runtime-start", "runtime-status reports physical deployment",
+            "repeated runtime-start", "repeated runtime-start preserves exact owned state",
+            "single exact physical default route after repeated start",
+            "runtime-status reports physical deployment",
             "runtime-check", "first runtime-stop", "second runtime-stop",
             "runtime-owned physical teardown",
         ):

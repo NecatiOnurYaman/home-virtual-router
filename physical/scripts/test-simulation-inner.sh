@@ -309,6 +309,21 @@ metrics_exporter_collection_healthy() {
   ! grep -F 'configured lan interface is absent' "$METRICS_EXPORT_LOG_FILE" >/dev/null 2>&1 &&
     ! grep -F 'configured wan interface is absent' "$METRICS_EXPORT_LOG_FILE" >/dev/null 2>&1
 }
+physical_convergence_signature() {
+  ip -o -4 route show default
+  ip -o -4 address show dev "$ROUTER_WAN_INTERFACE"
+  ip -o -4 address show dev "$ROUTER_LAN_INTERFACE"
+  nft -nn list table ip hvr-nat
+  nft -nn list table inet hvr-filter
+  for state_file in "$DNSMASQ_PID_FILE" "$IPFIX_PID_FILE" "$IPFIX_PLUGIN_PID_FILE" \
+    "$METRICS_EXPORT_PID_FILE" "$METRICS_EXPORT_STARTTIME_FILE"; do
+    printf '%s=' "$state_file"
+    cat "$state_file"
+  done
+}
+single_physical_default_route_ok() {
+  [ "$(ip -o -4 route show default | wc -l | tr -d ' ')" -eq 1 ] && physical_default_route_exact
+}
 runtime_status_physical() { "$repo_dir/lab/scripts/runtime-status.sh" | grep -F -x 'Recorded deployment: physical' >/dev/null; }
 physical_runtime_absent() {
   ! physical_address_exists hvr-sim-wan 203.0.113.2/24 &&
@@ -497,7 +512,11 @@ check "metrics LAN/WAN interface metrics present" metrics_interfaces_ok
 check "metrics exporter process identity" metrics_exporter_running
 check "metrics exporter physical-router network context" metrics_exporter_context_ok
 check "metrics exporter collection health" metrics_exporter_collection_healthy
+convergence_signature_before="$(physical_convergence_signature)"
 check "repeated runtime-start" "$repo_dir/lab/scripts/runtime-start.sh"
+check "repeated runtime-start preserves exact owned state" test \
+  "$convergence_signature_before" = "$(physical_convergence_signature)"
+check "single exact physical default route after repeated start" single_physical_default_route_ok
 check "runtime-status reports physical deployment" runtime_status_physical
 check "runtime-check" "$repo_dir/lab/scripts/runtime-check.sh"
 check "first runtime-stop" "$repo_dir/lab/scripts/runtime-stop.sh"

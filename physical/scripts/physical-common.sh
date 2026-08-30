@@ -19,6 +19,8 @@ readonly PHYSICAL_WAN_LINK_OWNED="$PHYSICAL_RUNTIME_DIR/wan-link-owned"
 readonly PHYSICAL_LAN_LINK_OWNED="$PHYSICAL_RUNTIME_DIR/lan-link-owned"
 readonly PHYSICAL_DEFAULT_ROUTE_OWNED="$PHYSICAL_RUNTIME_DIR/default-route-owned"
 readonly PHYSICAL_FORWARDING_ORIGINAL="$PHYSICAL_RUNTIME_DIR/forwarding-original"
+readonly PHYSICAL_RUNTIME_STATE="/run/home-virtual-router/runtime/state.env"
+readonly PHYSICAL_RUNTIME_CONFIG_SNAPSHOT="/run/home-virtual-router/runtime/config.snapshot"
 
 require_physical_authorization() {
   require_linux || return 1
@@ -53,12 +55,78 @@ physical_default_route_interface() {
   ip -o -4 route show default | awk 'NR == 1 { for (i=1;i<=NF;i++) if ($i=="dev") { print $(i+1); exit } }'
 }
 
+physical_render_map() {
+  printf 'MAP_VERSION=2\n'
+  printf 'DEPLOYMENT_MODE=physical\n'
+  printf 'ROUTER_NETNS=%s\n' "$(readlink /proc/self/ns/net)"
+  printf 'WAN_INTERFACE=%s\n' "$PHYSICAL_WAN_INTERFACE"
+  printf 'WAN_IFINDEX=%s\n' "$(cat "/sys/class/net/$PHYSICAL_WAN_INTERFACE/ifindex")"
+  printf 'WAN_MAC=%s\n' "$(cat "/sys/class/net/$PHYSICAL_WAN_INTERFACE/address")"
+  printf 'LAN_INTERFACE=%s\n' "$PHYSICAL_LAN_INTERFACE"
+  printf 'LAN_IFINDEX=%s\n' "$(cat "/sys/class/net/$PHYSICAL_LAN_INTERFACE/ifindex")"
+  printf 'LAN_MAC=%s\n' "$(cat "/sys/class/net/$PHYSICAL_LAN_INTERFACE/address")"
+  printf 'WAN_ADDRESS=%s/%s\n' "$PHYSICAL_WAN_ADDRESS" "$PHYSICAL_WAN_PREFIX_LENGTH"
+  printf 'WAN_GATEWAY=%s\n' "$PHYSICAL_WAN_GATEWAY"
+  printf 'LAN_ADDRESS=%s/%s\n' "$ROUTER_LAN" "${LAN_SUBNET#*/}"
+}
+
+physical_map_matches_live_config() {
+  [ -r "$PHYSICAL_MAP_FILE" ] && cmp -s "$PHYSICAL_MAP_FILE" <(physical_render_map)
+}
+
+physical_single_owned_default_route_exact() {
+  ip -o -4 route show default | awk -v gateway="$PHYSICAL_WAN_GATEWAY" -v interface="$PHYSICAL_WAN_INTERFACE" '
+    $1 == "default" {
+      count++; via=""; dev=""
+      for (i=1;i<=NF;i++) { if ($i=="via") via=$(i+1); if ($i=="dev") dev=$(i+1) }
+      if (via==gateway && dev==interface) exact++
+    }
+    END { exit !(count==1 && exact==1) }
+  '
+}
+
+physical_runtime_owns_active_topology() {
+  local deployment status owned
+  [ -r "$PHYSICAL_RUNTIME_STATE" ] && [ -r "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT" ] || return 1
+  cmp -s "$HVR_CONFIG" "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT" || return 1
+  deployment="$(python3 "$HVR_REPO_DIR/router/runtime/state.py" show "$PHYSICAL_RUNTIME_STATE" --field deployment 2>/dev/null)" || return 1
+  status="$(python3 "$HVR_REPO_DIR/router/runtime/state.py" show "$PHYSICAL_RUNTIME_STATE" --field status 2>/dev/null)" || return 1
+  owned="$(python3 "$HVR_REPO_DIR/router/runtime/state.py" show "$PHYSICAL_RUNTIME_STATE" --field owned 2>/dev/null)" || return 1
+  [ "$deployment" = physical ] && [ "$status" = running ] || return 1
+  case ",$owned," in *,topology,*) ;; *) return 1 ;; esac
+  case ",$owned," in *,routing,*) ;; *) return 1 ;; esac
+}
+
+physical_management_ownership_present() {
+  [ -e "$PHYSICAL_MAP_FILE" ] || [ -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ]
+}
+
+physical_owned_management_route_verified() {
+  [ -f "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] && [ -f "$PHYSICAL_MAP_FILE" ] &&
+    [ -f "$PHYSICAL_RUNTIME_STATE" ] && [ -f "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT" ] &&
+    [ "$(stat -c %u "$PHYSICAL_DEFAULT_ROUTE_OWNED")" = 0 ] &&
+    [ "$(stat -c %u:%a "$PHYSICAL_MAP_FILE")" = 0:640 ] &&
+    [ "$(stat -c %u:%a "$PHYSICAL_RUNTIME_STATE")" = 0:640 ] &&
+    [ "$(stat -c %u:%a "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT")" = 0:640 ] &&
+    physical_map_matches_live_config &&
+    physical_runtime_owns_active_topology && physical_single_owned_default_route_exact
+}
+
 physical_require_management_ack() {
   local default_interface
   default_interface="$(physical_default_route_interface)"
   if [ "$default_interface" = "$PHYSICAL_WAN_INTERFACE" ] || [ "$default_interface" = "$PHYSICAL_LAN_INTERFACE" ]; then
-    [ "$PHYSICAL_MANAGEMENT_INTERFACE_ACK" = "$default_interface" ] ||
-      die "$default_interface carries the current default route; acknowledge that exact interface with PHYSICAL_MANAGEMENT_INTERFACE_ACK=$default_interface"
+    if physical_management_ownership_present; then
+      if ! physical_owned_management_route_verified; then
+        die "physical runtime ownership mismatch for the configured default route; stop safely or restore the recorded configuration and interface identity"
+        return 1
+      fi
+      return 0
+    fi
+    if [ "$PHYSICAL_MANAGEMENT_INTERFACE_ACK" != "$default_interface" ]; then
+      die "$default_interface carries the current default route; ownership is not established; acknowledge that exact interface with PHYSICAL_MANAGEMENT_INTERFACE_ACK=$default_interface"
+      return 1
+    fi
   fi
 }
 
@@ -104,19 +172,13 @@ physical_preflight() {
 
 physical_write_map() {
   install -d -m 0750 -o 0 -g 0 "$PHYSICAL_RUNTIME_DIR"
-  {
-    printf 'DEPLOYMENT_MODE=physical\n'
-    printf 'WAN_INTERFACE=%s\n' "$PHYSICAL_WAN_INTERFACE"
-    printf 'LAN_INTERFACE=%s\n' "$PHYSICAL_LAN_INTERFACE"
-    printf 'WAN_ADDRESS=%s/%s\n' "$PHYSICAL_WAN_ADDRESS" "$PHYSICAL_WAN_PREFIX_LENGTH"
-    printf 'WAN_GATEWAY=%s\n' "$PHYSICAL_WAN_GATEWAY"
-    printf 'LAN_ADDRESS=%s/%s\n' "$ROUTER_LAN" "${LAN_SUBNET#*/}"
-  } > "$PHYSICAL_MAP_FILE"
+  physical_render_map > "$PHYSICAL_MAP_FILE"
   chmod 0640 "$PHYSICAL_MAP_FILE"
 }
 
 physical_topology_healthy() {
-  physical_interface_exists "$PHYSICAL_WAN_INTERFACE" && physical_interface_exists "$PHYSICAL_LAN_INTERFACE" &&
+  physical_map_matches_live_config &&
+    physical_interface_exists "$PHYSICAL_WAN_INTERFACE" && physical_interface_exists "$PHYSICAL_LAN_INTERFACE" &&
     physical_interface_is_up "$PHYSICAL_WAN_INTERFACE" && physical_interface_is_up "$PHYSICAL_LAN_INTERFACE" &&
     physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH" &&
     physical_address_exists "$PHYSICAL_LAN_INTERFACE" "$ROUTER_LAN/${LAN_SUBNET#*/}" && physical_default_route_exact
