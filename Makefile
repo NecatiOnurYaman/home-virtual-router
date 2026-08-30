@@ -1,4 +1,4 @@
-.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test systemd-show
+.PHONY: check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test physical-hardware-check physical-hardware-test-start physical-hardware-test-observe-nat physical-hardware-test-observe-firewall physical-hardware-test-verify physical-hardware-test-stop physical-hardware-test-post-reboot systemd-show
 
 check:
 	@bash -n router/scripts/*.sh lab/scripts/*.sh physical/scripts/*.sh tests/*.sh
@@ -180,6 +180,34 @@ physical-check:
 physical-sim-test:
 	@echo "Running R13 physical logic in isolated Linux namespaces requires root."
 	sudo physical/scripts/test-simulation.sh
+
+physical-hardware-check:
+	@echo "R14 REAL HARDWARE READ-ONLY CHECK: configured WAN/LAN NICs will be inspected, not changed."
+	sudo physical/scripts/hardware-check.sh
+
+physical-hardware-test-start:
+	@echo "R14 REAL HARDWARE VALIDATION: this modifies the two explicitly configured physical NICs."
+	sudo physical/scripts/hardware-test.sh start
+
+physical-hardware-test-observe-nat:
+	@echo "R14 NAT observation: generate the documented client traffic during this bounded capture."
+	sudo physical/scripts/hardware-test.sh observe-nat --client-ip "$(R14_CLIENT_IP)" --target "$(R14_UPSTREAM_TARGET)"
+
+physical-hardware-test-observe-firewall:
+	@echo "R14 firewall observation: send the documented controlled upstream probe during this bounded capture."
+	sudo physical/scripts/hardware-test.sh observe-firewall --client-ip "$(R14_CLIENT_IP)" --upstream-peer "$(R14_UPSTREAM_PEER)"
+
+physical-hardware-test-verify:
+	@echo "R14 verification requires real-client identity and decoded IPFIX evidence."
+	sudo physical/scripts/hardware-test.sh verify --client-mac "$(R14_CLIENT_MAC)" --client-ip "$(R14_CLIENT_IP)" --target "$(R14_UPSTREAM_TARGET)" --ipfix-result "$(R14_IPFIX_RESULT)"
+
+physical-hardware-test-stop:
+	@echo "R14 stopping only the recorded HVR runtime and verifying restoration."
+	sudo physical/scripts/hardware-test.sh stop
+
+physical-hardware-test-post-reboot:
+	@echo "R14 post-reboot validation never initiates reboot or changes persistence."
+	sudo physical/scripts/hardware-post-reboot.sh
 
 systemd-show:
 	@python3 router/scripts/render_systemd_unit.py "$(CURDIR)"

@@ -15,6 +15,11 @@ SIMULATION = ROOT / "physical/scripts/test-simulation.sh"
 SIMULATION_INNER = ROOT / "physical/scripts/test-simulation-inner.sh"
 TOPOLOGY_COMMON = ROOT / "lab/scripts/topology-common.sh"
 RUNTIME_START = ROOT / "lab/scripts/runtime-start.sh"
+HARDWARE_COMMON = ROOT / "physical/scripts/hardware-common.sh"
+HARDWARE_CHECK = ROOT / "physical/scripts/hardware-check.sh"
+HARDWARE_TEST = ROOT / "physical/scripts/hardware-test.sh"
+HARDWARE_POST_REBOOT = ROOT / "physical/scripts/hardware-post-reboot.sh"
+HARDWARE_DOC = ROOT / "docs/physical-hardware-validation.md"
 
 spec = importlib.util.spec_from_file_location("validate_config_physical", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
@@ -62,6 +67,63 @@ class PhysicalSafetyTests(unittest.TestCase):
     def run_function(self, definitions: str, function: str) -> subprocess.CompletedProcess[str]:
         command = f'source "{PHYSICAL_COMMON}"; {definitions}; {function}'
         return subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+
+    def test_r14_hardware_commands_are_explicit_real_physical_only(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        check = HARDWARE_CHECK.read_text(encoding="utf-8")
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("require_linux", common)
+        self.assertIn("require_root", common)
+        self.assertIn('DEPLOYMENT_MODE" = physical', common)
+        self.assertIn("require_physical_authorization", common)
+        self.assertIn("R14 refuses the R13 simulation override", common)
+        self.assertIn("physical_preflight", check)
+        self.assertNotIn("r14_prepare_report", check)
+        self.assertNotIn("r14_capture_inventory", check)
+        self.assertIn("physical-hardware-check", makefile)
+        self.assertNotIn("physical-hardware-test", makefile[makefile.index("check:"):makefile.index("test:")])
+
+    def test_r14_never_guesses_interfaces_or_changes_persistence(self) -> None:
+        scripts = "\n".join(path.read_text(encoding="utf-8") for path in (HARDWARE_COMMON, HARDWARE_CHECK, HARDWARE_TEST, HARDWARE_POST_REBOOT))
+        for forbidden in ("\nreboot", "shutdown -r", "systemctl enable", "systemctl disable", "nmcli connection modify", "ip link set"):
+            self.assertNotIn(forbidden, scripts)
+        self.assertIn("$PHYSICAL_WAN_INTERFACE", scripts)
+        self.assertIn("$PHYSICAL_LAN_INTERFACE", scripts)
+
+    def test_r14_reports_three_states_and_uses_bounded_diagnostics(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        for result in ("PASS", "FAIL", "NOT RUN"):
+            self.assertIn(result, common + hardware)
+        self.assertIn("tail -n 80", common)
+        self.assertIn("timeout 20 tcpdump", hardware)
+        self.assertNotIn("journalctl", common)
+
+    def test_r14_restoration_and_residue_are_exact_project_state(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        for marker in (
+            "RUNTIME_STATE_FILE", "PHYSICAL_MAP_FILE", "PHYSICAL_WAN_ADDRESS_OWNED",
+            "PHYSICAL_LAN_ADDRESS_OWNED", "PHYSICAL_WAN_LINK_OWNED", "PHYSICAL_LAN_LINK_OWNED",
+            "PHYSICAL_DEFAULT_ROUTE_OWNED", "PHYSICAL_FORWARDING_ORIGINAL", "IPFIX_PID_FILE",
+            "METRICS_EXPORT_PID_FILE", "METRICS_EXPORT_STARTTIME_FILE",
+        ):
+            self.assertIn(marker, common)
+        self.assertIn("Default-route restoration", hardware)
+        self.assertIn("Forwarding restoration", hardware)
+        self.assertIn("/var/lib/home-virtual-router/r14", common)
+        self.assertNotIn("nft flush ruleset", common + hardware)
+
+    def test_r14_requires_real_client_and_external_ipfix_evidence(self) -> None:
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        documentation = HARDWARE_DOC.read_text(encoding="utf-8")
+        for option in ("--client-mac", "--client-ip", "--target", "--ipfix-result"):
+            self.assertIn(option, hardware)
+        self.assertIn("lease_matches", hardware)
+        self.assertIn("dns_evidence_matches", hardware)
+        self.assertIn("client_source_preserved", hardware)
+        self.assertIn("real wired client", documentation)
+        self.assertIn("cannot pass R14", documentation)
 
     def test_management_default_requires_exact_interface_ack(self) -> None:
         definitions = (

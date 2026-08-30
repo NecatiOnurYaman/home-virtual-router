@@ -4,7 +4,7 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository is at **Stage R13: physical router deployment**. R13 maps the proven semantic WAN/LAN roles to explicitly configured dedicated Linux NICs while preserving the R2–R12 namespace lab. Actual hardware acceptance remains R14 and has not been performed. Router management, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
+The repository includes **Stage R14: physical deployment validation infrastructure**. R13 maps the proven semantic WAN/LAN roles to explicitly configured dedicated Linux NICs; R14 adds an opt-in, phased real-NIC/real-client acceptance workflow. R14 implementation is complete, but actual hardware acceptance remains pending. Router management, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
 
 Development happens inside a dedicated Ubuntu 26.04 LTS virtual machine running under UTM on macOS. The namespace lab stays inside that VM without changing macOS networking or the VM's normal UTM-facing interface and default route.
 
@@ -45,6 +45,8 @@ The lab targets clearly invoke `sudo`. DHCP disable restores the earlier static 
 For the complete runtime, use `make runtime-start`, `runtime-status`, `runtime-check`, `runtime-restart`, and `runtime-stop`. R12 starts only missing stages, validates healthy existing stages, rejects conflicting partial state, and removes only stages recorded as runtime-owned. `make runtime-test` proves bounded double-start/double-stop behavior from an absent Ubuntu lab baseline. State and diagnostics are under `/run/home-virtual-router/runtime/`; see `docs/runtime.md` for rollback, degraded-state, reboot, and optional systemd-template details.
 
 The tracked default remains `DEPLOYMENT_MODE=lab`. Physical mode is selected only by a complete, root-owned `/etc/home-virtual-router/router.env` based on `config/physical.example.env`, plus the separately created `/etc/home-virtual-router/allow-physical-deployment` authorization marker. Run `sudo make physical-check` before any physical start. Never first deploy over SSH on a configured WAN/LAN NIC unless losing that session is deliberate and the exact interface acknowledgement is set. See `docs/physical-deployment.md`.
+
+R14 real-hardware acceptance begins with `sudo make physical-hardware-check`, then uses explicit start, bounded NAT/firewall observation, evidence verification, and stop/restoration phases. It never guesses NICs, reboots, enables systemd, or reconfigures a network manager. Use a local console and a real wired LAN client; see `docs/physical-hardware-validation.md` before running any mutating target.
 
 ## Observability integration
 
