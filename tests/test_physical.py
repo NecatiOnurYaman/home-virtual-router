@@ -192,7 +192,8 @@ class PhysicalSafetyTests(unittest.TestCase):
         for required in (
             "dnsmasq_dhcp_running", "process_is_in_router_namespace", "physical_topology_healthy",
             "physical_dhcp_config_healthy", "physical_dhcp_listener_healthy",
-            "physical_dhcp_lease_file_healthy", "pid=$pid", "UDP/67 listeners",
+            "physical_dhcp_lease_file_healthy", "physical_ipv4_dhcp_socket_inodes",
+            "physical_process_socket_inodes", "physical_socket_inodes_exactly_owned",
         ):
             self.assertIn(required, health)
         self.assertNotIn("dhclient_running", health)
@@ -205,6 +206,47 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertNotIn("grep", lease_health)
         self.assertNotIn("cmp", lease_health)
 
+    def test_physical_dhcp_listener_uses_ipv4_kernel_socket_inode_ownership(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc_root = Path(directory) / "proc"
+            udp = proc_root / "net" / "udp"
+            descriptors = proc_root / "123" / "fd"
+            udp.parent.mkdir(parents=True)
+            descriptors.mkdir(parents=True)
+            udp.write_text(
+                "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"
+                "1: 00000000:0043 00000000:0000 07 00000000:00000000 00:00000000 00000000 0 0 111 2\n",
+                encoding="ascii",
+            )
+            (descriptors / "4").symlink_to("socket:[111]")
+            command = (
+                f'source "{PHYSICAL_COMMON}"; '
+                f'listeners="$(physical_ipv4_dhcp_socket_inodes "{udp}")"; '
+                f'owned="$(physical_process_socket_inodes 123 "{proc_root}")"; '
+                'physical_socket_inodes_exactly_owned "$listeners" "$owned"'
+            )
+            accepted = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+            with udp.open("a", encoding="ascii") as stream:
+                stream.write(
+                    "2: 00000000:0043 00000000:0000 07 00000000:00000000 "
+                    "00:00000000 00000000 0 0 222 2\n"
+                )
+            rejected = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+            self.assertNotEqual(rejected.returncode, 0)
+
+    def test_listener_health_does_not_depend_on_ss_process_formatting(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        listener = common[
+            common.index("physical_dhcp_listener_healthy()"):
+            common.index("physical_dhcp_lease_file_healthy()")
+        ]
+        self.assertIn("/proc/net/udp", common)
+        self.assertNotIn("ss ", listener)
+        self.assertNotIn("udp6", listener)
+        self.assertIn(":0043", common)
+
     def test_physical_dhcp_conflict_reports_predicate_diagnostics(self) -> None:
         runtime = (ROOT / "lab/scripts/runtime-common.sh").read_text(encoding="utf-8")
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
@@ -214,6 +256,9 @@ class PhysicalSafetyTests(unittest.TestCase):
             "executable", "starttime", "process netns", "router netns", "process identity/context",
             "configuration", "LAN topology", "DHCP listener", "lease file metadata",
             "generated dnsmasq configuration", "lease file (last 20 lines)", "LAN link/address",
+            "NSpid", "process mountns", "process pidns", "router mountns", "router pidns",
+            "IPv4 UDP/67 socket inodes", "verified dnsmasq socket inodes", "ss -H -lun",
+            "/proc/net/udp entries", "/proc mount", "dnsmasq log (last 40 lines)",
         ):
             self.assertIn(diagnostic, common)
 

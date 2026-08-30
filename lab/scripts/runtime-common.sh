@@ -22,7 +22,7 @@ readonly RUNTIME_LOCK_RUNNER="$HVR_REPO_DIR/router/scripts/run_with_runtime_lock
 
 runtime_dependencies() {
   if [ "$DEPLOYMENT_MODE" = "physical" ]; then
-    commands="ip nft dnsmasq sysctl python3 ss getent pmacctd ps readlink flock timeout tac cmp stat find sed"
+    commands="ip nft dnsmasq sysctl python3 ss getent pmacctd ps readlink flock timeout tac cmp stat find sed sort"
     [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-}" = 1 ] && commands="$commands nsenter"
   else
     commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig pmacctd ps readlink flock timeout tac cmp"

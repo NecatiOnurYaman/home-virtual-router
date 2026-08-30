@@ -236,7 +236,8 @@ physical_routing_disable() {
 physical_dnsmasq_process_healthy() {
   local pid
   pid="$(read_project_pid "$DNSMASQ_PID_FILE")" || return 1
-  dnsmasq_dhcp_running && process_is_in_router_namespace "$pid"
+  dnsmasq_dhcp_running && process_is_in_router_namespace "$pid" &&
+    [ "$(readlink "/proc/$pid/ns/pid" 2>/dev/null)" = "$(readlink /proc/self/ns/pid 2>/dev/null)" ]
 }
 
 physical_dhcp_config_healthy() {
@@ -257,11 +258,34 @@ physical_dhcp_config_healthy() {
   fi
 }
 
+physical_ipv4_dhcp_socket_inodes() {
+  local udp_table="${1:-/proc/net/udp}"
+  awk '$2 ~ /:0043$/ {print $10}' "$udp_table" | sort -u
+}
+
+physical_process_socket_inodes() {
+  local pid="$1" proc_root="${2:-/proc}" descriptor target
+  for descriptor in "$proc_root/$pid/fd"/*; do
+    target="$(readlink "$descriptor" 2>/dev/null || true)"
+    case "$target" in socket:\[*\]) printf '%s\n' "$target" | sed -n 's/^socket:\[\([0-9][0-9]*\)\]$/\1/p' ;; esac
+  done | sort -u
+}
+
+physical_socket_inodes_exactly_owned() {
+  local listener_inodes="$1" process_inodes="$2" inode
+  [ -n "$listener_inodes" ] || return 1
+  while IFS= read -r inode; do
+    [ -n "$inode" ] || continue
+    printf '%s\n' "$process_inodes" | grep -F -x -- "$inode" >/dev/null || return 1
+  done <<< "$listener_inodes"
+}
+
 physical_dhcp_listener_healthy() {
-  local pid listeners
+  local pid listener_inodes process_inodes
   pid="$(read_project_pid "$DNSMASQ_PID_FILE")" || return 1
-  listeners="$(ss -lunpH | awk '$5 ~ /:67$/')"
-  [ -n "$listeners" ] && ! printf '%s\n' "$listeners" | grep -F -v -- "pid=$pid" >/dev/null
+  listener_inodes="$(physical_ipv4_dhcp_socket_inodes)" || return 1
+  process_inodes="$(physical_process_socket_inodes "$pid")" || return 1
+  physical_socket_inodes_exactly_owned "$listener_inodes" "$process_inodes"
 }
 
 physical_dhcp_lease_file_healthy() {
@@ -276,7 +300,9 @@ physical_dns_healthy() { physical_dhcp_healthy && [ -e "$DNS_ENABLED_FILE" ] && 
 
 report_physical_dhcp_health() {
   local pid="<absent>" executable="<absent>" starttime="<absent>" process_netns="<absent>"
-  local router_netns listener="<absent>" expected_mode=standalone runtime_status="<absent>" runtime_owned="<absent>"
+  local process_mntns="<absent>" process_pidns="<absent>" nspid="<absent>"
+  local router_netns router_mntns router_pidns listener_inodes="<none>" process_inodes="<none>"
+  local expected_mode=standalone runtime_status="<absent>" runtime_owned="<absent>"
   pid="$(cat "$DNSMASQ_PID_FILE" 2>/dev/null || echo '<absent>')"
   case "$pid" in
     *[!0-9]*|'') ;;
@@ -284,25 +310,44 @@ report_physical_dhcp_health() {
       executable="$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo '<exited>')"
       starttime="$(process_starttime "$pid" 2>/dev/null || echo '<exited>')"
       process_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null || echo '<exited>')"
+      process_mntns="$(readlink "/proc/$pid/ns/mnt" 2>/dev/null || echo '<exited>')"
+      process_pidns="$(readlink "/proc/$pid/ns/pid" 2>/dev/null || echo '<exited>')"
+      nspid="$(awk '/^NSpid:/ {$1=""; sub(/^[[:space:]]+/, ""); print}' "/proc/$pid/status" 2>/dev/null || echo '<exited>')"
+      process_inodes="$(physical_process_socket_inodes "$pid" 2>/dev/null || echo '<unreadable>')"
       ;;
   esac
   router_netns="$(router_context_namespace_identity net 2>/dev/null || echo '<unreadable>')"
+  router_mntns="$(router_context_namespace_identity mnt 2>/dev/null || echo '<unreadable>')"
+  router_pidns="$(readlink /proc/self/ns/pid 2>/dev/null || echo '<unreadable>')"
+  listener_inodes="$(physical_ipv4_dhcp_socket_inodes 2>/dev/null || echo '<unreadable>')"
   if [ -r "$PHYSICAL_RUNTIME_STATE" ]; then
     runtime_status="$(python3 "$HVR_REPO_DIR/router/runtime/state.py" show "$PHYSICAL_RUNTIME_STATE" --field status 2>/dev/null || echo '<malformed>')"
     runtime_owned="$(python3 "$HVR_REPO_DIR/router/runtime/state.py" show "$PHYSICAL_RUNTIME_STATE" --field owned 2>/dev/null || echo '<malformed>')"
   fi
   [ ! -e "$DNS_ENABLED_FILE" ] || expected_mode='combined DHCP+DNS'
-  listener="$(ss -lunpH 2>/dev/null | awk '$5 ~ /:67$/' || true)"
-  printf 'Physical DHCP health diagnostic:\n  deployment mode: %s\n  expected steady state: %s\n  configured LAN: %s\n  configured LAN address: %s/%s\n  configured range: %s - %s\n  runtime status: %s\n  runtime owned stages: %s\n  PID file: %s\n  PID: %s\n  executable: %s\n  starttime: %s\n  process netns: %s\n  router netns: %s\n  config: %s\n  process identity/context: %s\n  configuration: %s\n  LAN topology: %s\n  DHCP listener: %s\n  lease file metadata: %s\n  UDP/67 listeners:\n%s\n' \
+  printf 'Physical DHCP health diagnostic:\n  deployment mode: %s\n  expected steady state: %s\n  configured LAN: %s\n  configured LAN address: %s/%s\n  configured range: %s - %s\n  runtime status: %s\n  runtime owned stages: %s\n  PID file: %s\n  PID: %s\n  NSpid: %s\n  executable: %s\n  starttime: %s\n  process netns: %s\n  process mountns: %s\n  process pidns: %s\n  router netns: %s\n  router mountns: %s\n  router pidns: %s\n  config: %s\n  process identity/context: %s\n  configuration: %s\n  LAN topology: %s\n  DHCP listener ownership: %s\n  lease file metadata: %s\n  IPv4 UDP/67 socket inodes: %s\n  verified dnsmasq socket inodes: %s\n' \
     "$DEPLOYMENT_MODE" "$expected_mode" "$PHYSICAL_LAN_INTERFACE" "$ROUTER_LAN" "${LAN_SUBNET#*/}" \
     "$DHCP_RANGE_START" "$DHCP_RANGE_END" "$runtime_status" "$runtime_owned" \
-    "$DNSMASQ_PID_FILE" "$pid" "$executable" "$starttime" \
-    "$process_netns" "$router_netns" "$DNSMASQ_CONFIG" \
+    "$DNSMASQ_PID_FILE" "$pid" "$nspid" "$executable" "$starttime" \
+    "$process_netns" "$process_mntns" "$process_pidns" "$router_netns" "$router_mntns" "$router_pidns" "$DNSMASQ_CONFIG" \
     "$(physical_dnsmasq_process_healthy && echo PASS || echo FAIL)" \
     "$(physical_dhcp_config_healthy && echo PASS || echo FAIL)" \
     "$(physical_topology_healthy && echo PASS || echo FAIL)" \
     "$(physical_dhcp_listener_healthy && echo PASS || echo FAIL)" \
-    "$(physical_dhcp_lease_file_healthy && echo PASS || echo FAIL)" "${listener:-  <none>}" >&2
+    "$(physical_dhcp_lease_file_healthy && echo PASS || echo FAIL)" \
+    "${listener_inodes:-<none>}" "${process_inodes:-<none>}" >&2
+  echo 'ss -H -lun:' >&2
+  ss -H -lun >&2 2>/dev/null || true
+  echo 'ss -H -lunp:' >&2
+  ss -H -lunp >&2 2>/dev/null || true
+  echo 'ss -H -uan:' >&2
+  ss -H -uan >&2 2>/dev/null || true
+  echo '/proc/net/udp entries for IPv4 UDP/67 (:0043):' >&2
+  awk 'NR == 1 || $2 ~ /:0043$/' /proc/net/udp >&2 2>/dev/null || true
+  echo '/proc/net/udp6 entries for port 67 (:0043), diagnostic only:' >&2
+  awk 'NR == 1 || $2 ~ /:0043$/' /proc/net/udp6 >&2 2>/dev/null || true
+  echo '/proc mount:' >&2
+  findmnt -T /proc >&2 2>/dev/null || true
   echo 'generated dnsmasq configuration:' >&2
   sed 's/^/  /' "$DNSMASQ_CONFIG" >&2 2>/dev/null || echo '  <absent>' >&2
   echo 'lease file (last 20 lines):' >&2
@@ -310,6 +355,8 @@ report_physical_dhcp_health() {
   echo 'LAN link/address:' >&2
   ip -details link show dev "$PHYSICAL_LAN_INTERFACE" >&2 2>/dev/null || true
   ip -o -4 address show dev "$PHYSICAL_LAN_INTERFACE" >&2 2>/dev/null || true
+  echo 'dnsmasq log (last 40 lines):' >&2
+  tail -n 40 "$DNSMASQ_LOG_FILE" >&2 2>/dev/null || echo '  <absent>' >&2
 }
 
 physical_prepare_dhcp_runtime() {
