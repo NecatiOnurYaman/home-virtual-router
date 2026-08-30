@@ -318,6 +318,25 @@ physical_prepare_dhcp_runtime() {
     die "physical DHCP runtime directory has unexpected ownership or permissions"
 }
 
+physical_wait_for_dhcp_readiness() {
+  local attempt pid
+  for attempt in {1..50}; do
+    physical_dhcp_healthy && return 0
+    if pid="$(read_project_pid "$DNSMASQ_PID_FILE" 2>/dev/null)"; then
+      if ! process_is_running "$pid" || ! project_process_matches "$pid" dnsmasq "$DNSMASQ_CONFIG" ||
+          ! process_is_in_router_namespace "$pid"; then
+        report_physical_dhcp_health
+        die "physical dnsmasq exited or changed identity before DHCP readiness"
+        return 1
+      fi
+    fi
+    sleep 0.05
+  done
+  report_physical_dhcp_health
+  die "physical dnsmasq did not reach strict DHCP readiness within 2.5 seconds"
+  return 1
+}
+
 physical_start_dnsmasq() {
   resolve_dnsmasq_identity
   physical_prepare_dhcp_runtime
@@ -325,7 +344,7 @@ physical_start_dnsmasq() {
   chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE"
   dnsmasq --test --conf-file="$DNSMASQ_CONFIG" >/dev/null
   dnsmasq --conf-file="$DNSMASQ_CONFIG"
-  dnsmasq_dhcp_running || die "physical dnsmasq did not remain running"
+  physical_wait_for_dhcp_readiness
 }
 
 physical_dhcp_enable() { resolve_dnsmasq_identity; physical_prepare_dhcp_runtime; render_dnsmasq_config; physical_start_dnsmasq; }
@@ -342,8 +361,8 @@ physical_dns_enable() {
   resolve_dnsmasq_identity
   chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DNS_LOG_FILE"
   render_router_dns_config
-  physical_start_dnsmasq
   touch "$DNS_ENABLED_FILE"
+  physical_start_dnsmasq
   physical_dns_healthy || die "physical DNS did not reach LAN-only state"
   lan_link_local_addresses="$(ip -o -6 address show dev "$PHYSICAL_LAN_INTERFACE" scope link | awk '{sub(/\/.*/, "", $4); print $4}')"
   ss -lntuH | validate_router_dns_listeners "$ROUTER_LAN" "$PHYSICAL_WAN_ADDRESS" \
@@ -353,6 +372,7 @@ physical_dns_enable() {
 physical_dns_disable() {
   physical_dns_healthy || die "physical DNS is not healthy"
   stop_project_process "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"
+  rm -f -- "$DNS_ENABLED_FILE"
   render_dnsmasq_config
   physical_start_dnsmasq
   remove_project_dns_files

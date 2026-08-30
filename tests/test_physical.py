@@ -217,6 +217,65 @@ class PhysicalSafetyTests(unittest.TestCase):
         ):
             self.assertIn(diagnostic, common)
 
+    def test_physical_dnsmasq_start_waits_for_strict_bounded_readiness(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        wait = common[
+            common.index("physical_wait_for_dhcp_readiness()"):
+            common.index("physical_start_dnsmasq()")
+        ]
+        start = common[
+            common.index("physical_start_dnsmasq()"):
+            common.index("physical_dhcp_enable()")
+        ]
+        self.assertIn("for attempt in {1..50}", wait)
+        self.assertIn("sleep 0.05", wait)
+        self.assertIn("within 2.5 seconds", wait)
+        self.assertIn("physical_dhcp_healthy && return 0", wait)
+        self.assertIn("process_is_running", wait)
+        self.assertIn("project_process_matches", wait)
+        self.assertIn("process_is_in_router_namespace", wait)
+        self.assertIn("report_physical_dhcp_health", wait)
+        self.assertIn("physical_wait_for_dhcp_readiness", start)
+        self.assertNotIn("dnsmasq_dhcp_running || die", start)
+
+    def test_physical_dhcp_readiness_retries_without_diagnostic_spam(self) -> None:
+        definitions = (
+            'attempts=0; reports=0; '
+            'physical_dhcp_healthy(){ attempts=$((attempts+1)); [ "$attempts" -ge 3 ]; }; '
+            'read_project_pid(){ return 1; }; sleep(){ :; }; '
+            'report_physical_dhcp_health(){ reports=$((reports+1)); }'
+        )
+        result = self.run_function(
+            definitions,
+            'physical_wait_for_dhcp_readiness; [ "$attempts" -eq 3 ] && [ "$reports" -eq 0 ]',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_physical_dhcp_readiness_times_out_or_fails_identity_early(self) -> None:
+        timeout_definitions = (
+            'reports=0; physical_dhcp_healthy(){ return 1; }; read_project_pid(){ return 1; }; '
+            'sleep(){ :; }; report_physical_dhcp_health(){ reports=$((reports+1)); }'
+        )
+        timeout = self.run_function(timeout_definitions, "physical_wait_for_dhcp_readiness")
+        self.assertNotEqual(timeout.returncode, 0)
+        self.assertIn("within 2.5 seconds", timeout.stderr)
+
+        fatal_definitions = (
+            'checks=0; physical_dhcp_healthy(){ return 1; }; read_project_pid(){ echo 123; }; '
+            'process_is_running(){ checks=$((checks+1)); return 1; }; sleep(){ checks=99; }; '
+            'report_physical_dhcp_health(){ :; }'
+        )
+        fatal = self.run_function(fatal_definitions, "physical_wait_for_dhcp_readiness")
+        self.assertNotEqual(fatal.returncode, 0)
+        self.assertIn("exited or changed identity", fatal.stderr)
+
+    def test_physical_dns_transition_sets_mode_before_readiness(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        enable = common[common.index("physical_dns_enable()") : common.index("physical_dns_disable()")]
+        disable = common[common.index("physical_dns_disable()") : common.index("physical_ipfix_enable()")]
+        self.assertLess(enable.index('touch "$DNS_ENABLED_FILE"'), enable.index("physical_start_dnsmasq"))
+        self.assertLess(disable.index('rm -f -- "$DNS_ENABLED_FILE"'), disable.index("physical_start_dnsmasq"))
+
     def test_startup_failure_captures_status_before_message_and_rolls_back_reverse(self) -> None:
         start = RUNTIME_START.read_text(encoding="utf-8")
         self.assertIn('local status="$?" stage code message', start)
