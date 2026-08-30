@@ -168,6 +168,55 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertIn(enable, common)
         self.assertLess(common.index("physical_prepare_dhcp_runtime; render_dnsmasq_config"), common.index("physical_start_dnsmasq; }"))
 
+    def test_physical_dhcp_health_accepts_standalone_and_combined_dnsmasq(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        config_health = common[
+            common.index("physical_dhcp_config_healthy()"):
+            common.index("physical_dhcp_listener_healthy()")
+        ]
+        self.assertIn('if [ -e "$DNS_ENABLED_FILE" ]', config_health)
+        self.assertIn("grep -F -x 'port=53'", config_health)
+        self.assertIn("grep -F -x 'port=0'", config_health)
+        for shared_setting in (
+            "interface=$PHYSICAL_LAN_INTERFACE", "dhcp-authoritative", "dhcp-range=",
+            "dhcp-option=option:router", "dhcp-option=option:dns-server",
+            "dhcp-leasefile=$DNSMASQ_LEASE_FILE", "pid-file=$DNSMASQ_PID_FILE",
+        ):
+            self.assertIn(shared_setting, config_health)
+
+    def test_physical_dhcp_health_is_server_owned_and_fails_closed(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        start = common.index("physical_dnsmasq_process_healthy()")
+        end = common.index("physical_prepare_dhcp_runtime()")
+        health = common[start:end]
+        for required in (
+            "dnsmasq_dhcp_running", "process_is_in_router_namespace", "physical_topology_healthy",
+            "physical_dhcp_config_healthy", "physical_dhcp_listener_healthy",
+            "physical_dhcp_lease_file_healthy", "pid=$pid", "UDP/67 listeners",
+        ):
+            self.assertIn(required, health)
+        self.assertNotIn("dhclient_running", health)
+        self.assertNotIn("DHCLIENT_PID_FILE", health)
+        self.assertNotIn("client_dhcp_address", health)
+        lease_health = health[
+            health.index("physical_dhcp_lease_file_healthy()"):
+            health.index("physical_dhcp_healthy()")
+        ]
+        self.assertNotIn("grep", lease_health)
+        self.assertNotIn("cmp", lease_health)
+
+    def test_physical_dhcp_conflict_reports_predicate_diagnostics(self) -> None:
+        runtime = (ROOT / "lab/scripts/runtime-common.sh").read_text(encoding="utf-8")
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        self.assertIn("report_physical_dhcp_health", runtime)
+        for diagnostic in (
+            "expected steady state", "configured LAN", "configured range", "PID file",
+            "executable", "starttime", "process netns", "router netns", "process identity/context",
+            "configuration", "LAN topology", "DHCP listener", "lease file metadata",
+            "generated dnsmasq configuration", "lease file (last 20 lines)", "LAN link/address",
+        ):
+            self.assertIn(diagnostic, common)
+
     def test_startup_failure_captures_status_before_message_and_rolls_back_reverse(self) -> None:
         start = RUNTIME_START.read_text(encoding="utf-8")
         self.assertIn('local status="$?" stage code message', start)

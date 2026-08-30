@@ -233,8 +233,84 @@ physical_routing_disable() {
   rm -f -- "$PHYSICAL_FORWARDING_ORIGINAL"
 }
 
-physical_dhcp_healthy() { dnsmasq_dhcp_running && grep -F -x 'port=0' "$DNSMASQ_CONFIG" >/dev/null 2>&1; }
-physical_dns_healthy() { dnsmasq_dhcp_running && [ -e "$DNS_ENABLED_FILE" ] && grep -F -x 'port=53' "$DNSMASQ_CONFIG" >/dev/null 2>&1 && grep -F -x "interface=$PHYSICAL_LAN_INTERFACE" "$DNSMASQ_CONFIG" >/dev/null 2>&1; }
+physical_dnsmasq_process_healthy() {
+  local pid
+  pid="$(read_project_pid "$DNSMASQ_PID_FILE")" || return 1
+  dnsmasq_dhcp_running && process_is_in_router_namespace "$pid"
+}
+
+physical_dhcp_config_healthy() {
+  grep -F -x "interface=$PHYSICAL_LAN_INTERFACE" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+    grep -F -x 'bind-interfaces' "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+    grep -F -x 'dhcp-authoritative' "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+    grep -F -x "dhcp-range=$DHCP_RANGE_START,$DHCP_RANGE_END,255.255.255.0,$DHCP_LEASE_TIME" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+    grep -F -x "dhcp-option=option:router,$ROUTER_LAN" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+    grep -F -x "dhcp-option=option:dns-server,$DHCP_DNS_SERVER" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+    grep -F -x "dhcp-leasefile=$DNSMASQ_LEASE_FILE" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+    grep -F -x "pid-file=$DNSMASQ_PID_FILE" "$DNSMASQ_CONFIG" >/dev/null 2>&1 || return 1
+  if [ -e "$DNS_ENABLED_FILE" ]; then
+    grep -F -x 'port=53' "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+      grep -F -x "listen-address=$ROUTER_LAN" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+      grep -F -x "server=$DNS_UPSTREAM" "$DNSMASQ_CONFIG" >/dev/null 2>&1
+  else
+    grep -F -x 'port=0' "$DNSMASQ_CONFIG" >/dev/null 2>&1
+  fi
+}
+
+physical_dhcp_listener_healthy() {
+  local pid listeners
+  pid="$(read_project_pid "$DNSMASQ_PID_FILE")" || return 1
+  listeners="$(ss -lunpH | awk '$5 ~ /:67$/')"
+  [ -n "$listeners" ] && ! printf '%s\n' "$listeners" | grep -F -v -- "pid=$pid" >/dev/null
+}
+
+physical_dhcp_lease_file_healthy() {
+  [ -f "$DNSMASQ_LEASE_FILE" ] && [ "$(stat -c %u:%g:%a "$DNSMASQ_LEASE_FILE")" = "$DNSMASQ_UID:$DNSMASQ_GID:644" ]
+}
+
+physical_dhcp_healthy() {
+  resolve_dnsmasq_identity && physical_topology_healthy && physical_dnsmasq_process_healthy &&
+    physical_dhcp_config_healthy && physical_dhcp_listener_healthy && physical_dhcp_lease_file_healthy
+}
+physical_dns_healthy() { physical_dhcp_healthy && [ -e "$DNS_ENABLED_FILE" ] && grep -F -x 'port=53' "$DNSMASQ_CONFIG" >/dev/null 2>&1; }
+
+report_physical_dhcp_health() {
+  local pid="<absent>" executable="<absent>" starttime="<absent>" process_netns="<absent>"
+  local router_netns listener="<absent>" expected_mode=standalone runtime_status="<absent>" runtime_owned="<absent>"
+  pid="$(cat "$DNSMASQ_PID_FILE" 2>/dev/null || echo '<absent>')"
+  case "$pid" in
+    *[!0-9]*|'') ;;
+    *)
+      executable="$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo '<exited>')"
+      starttime="$(process_starttime "$pid" 2>/dev/null || echo '<exited>')"
+      process_netns="$(readlink "/proc/$pid/ns/net" 2>/dev/null || echo '<exited>')"
+      ;;
+  esac
+  router_netns="$(router_context_namespace_identity net 2>/dev/null || echo '<unreadable>')"
+  if [ -r "$PHYSICAL_RUNTIME_STATE" ]; then
+    runtime_status="$(python3 "$HVR_REPO_DIR/router/runtime/state.py" show "$PHYSICAL_RUNTIME_STATE" --field status 2>/dev/null || echo '<malformed>')"
+    runtime_owned="$(python3 "$HVR_REPO_DIR/router/runtime/state.py" show "$PHYSICAL_RUNTIME_STATE" --field owned 2>/dev/null || echo '<malformed>')"
+  fi
+  [ ! -e "$DNS_ENABLED_FILE" ] || expected_mode='combined DHCP+DNS'
+  listener="$(ss -lunpH 2>/dev/null | awk '$5 ~ /:67$/' || true)"
+  printf 'Physical DHCP health diagnostic:\n  deployment mode: %s\n  expected steady state: %s\n  configured LAN: %s\n  configured LAN address: %s/%s\n  configured range: %s - %s\n  runtime status: %s\n  runtime owned stages: %s\n  PID file: %s\n  PID: %s\n  executable: %s\n  starttime: %s\n  process netns: %s\n  router netns: %s\n  config: %s\n  process identity/context: %s\n  configuration: %s\n  LAN topology: %s\n  DHCP listener: %s\n  lease file metadata: %s\n  UDP/67 listeners:\n%s\n' \
+    "$DEPLOYMENT_MODE" "$expected_mode" "$PHYSICAL_LAN_INTERFACE" "$ROUTER_LAN" "${LAN_SUBNET#*/}" \
+    "$DHCP_RANGE_START" "$DHCP_RANGE_END" "$runtime_status" "$runtime_owned" \
+    "$DNSMASQ_PID_FILE" "$pid" "$executable" "$starttime" \
+    "$process_netns" "$router_netns" "$DNSMASQ_CONFIG" \
+    "$(physical_dnsmasq_process_healthy && echo PASS || echo FAIL)" \
+    "$(physical_dhcp_config_healthy && echo PASS || echo FAIL)" \
+    "$(physical_topology_healthy && echo PASS || echo FAIL)" \
+    "$(physical_dhcp_listener_healthy && echo PASS || echo FAIL)" \
+    "$(physical_dhcp_lease_file_healthy && echo PASS || echo FAIL)" "${listener:-  <none>}" >&2
+  echo 'generated dnsmasq configuration:' >&2
+  sed 's/^/  /' "$DNSMASQ_CONFIG" >&2 2>/dev/null || echo '  <absent>' >&2
+  echo 'lease file (last 20 lines):' >&2
+  tail -n 20 "$DNSMASQ_LEASE_FILE" >&2 2>/dev/null || echo '  <absent>' >&2
+  echo 'LAN link/address:' >&2
+  ip -details link show dev "$PHYSICAL_LAN_INTERFACE" >&2 2>/dev/null || true
+  ip -o -4 address show dev "$PHYSICAL_LAN_INTERFACE" >&2 2>/dev/null || true
+}
 
 physical_prepare_dhcp_runtime() {
   install -d -o 0 -g 0 -m 0755 "$DHCP_RUNTIME_DIR"

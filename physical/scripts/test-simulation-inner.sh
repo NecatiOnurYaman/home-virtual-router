@@ -310,16 +310,20 @@ metrics_exporter_collection_healthy() {
     ! grep -F 'configured wan interface is absent' "$METRICS_EXPORT_LOG_FILE" >/dev/null 2>&1
 }
 physical_convergence_signature() {
+  local state_file dnsmasq_pid
   ip -o -4 route show default
   ip -o -4 address show dev "$ROUTER_WAN_INTERFACE"
   ip -o -4 address show dev "$ROUTER_LAN_INTERFACE"
   nft -nn list table ip hvr-nat
   nft -nn list table inet hvr-filter
   for state_file in "$DNSMASQ_PID_FILE" "$IPFIX_PID_FILE" "$IPFIX_PLUGIN_PID_FILE" \
+    "$IPFIX_CORE_STARTTIME_FILE" "$IPFIX_PLUGIN_STARTTIME_FILE" \
     "$METRICS_EXPORT_PID_FILE" "$METRICS_EXPORT_STARTTIME_FILE"; do
     printf '%s=' "$state_file"
     cat "$state_file"
   done
+  dnsmasq_pid="$(read_project_pid "$DNSMASQ_PID_FILE")"
+  printf 'dnsmasq-starttime=%s\n' "$(process_starttime "$dnsmasq_pid")"
 }
 single_physical_default_route_ok() {
   [ "$(ip -o -4 route show default | wc -l | tr -d ' ')" -eq 1 ] && physical_default_route_exact

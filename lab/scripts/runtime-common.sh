@@ -144,7 +144,12 @@ runtime_stage_state() {
       ! filter_table_exists && return 1
       return 2 ;;
     dhcp)
-      if [ "$DEPLOYMENT_MODE" = "physical" ]; then physical_dhcp_healthy && return 0; [ ! -e "$DNSMASQ_PID_FILE" ] && return 1; return 2; fi
+      if [ "$DEPLOYMENT_MODE" = "physical" ]; then
+        physical_dhcp_healthy && return 0
+        [ ! -e "$DNSMASQ_PID_FILE" ] && return 1
+        report_physical_dhcp_health
+        return 2
+      fi
       if ! namespace_exists "$ROUTER_NAMESPACE" || ! namespace_exists "$CLIENT_NAMESPACE"; then
         [ ! -e "$DNSMASQ_PID_FILE" ] && [ ! -e "$DHCLIENT_PID_FILE" ] && return 1
         return 2
