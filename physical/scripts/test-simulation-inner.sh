@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_dir="$1" simulation_config="$2" outer_net_namespace="$3" outer_mount_namespace="$4"
-for command in ip nft sysctl dnsmasq dhclient dig ping tcpdump python3; do
+for command in ip nft sysctl dnsmasq dhclient dig ping tcpdump python3 mount findmnt; do
   command -v "$command" >/dev/null || { echo "error: physical simulation requires $command" >&2; exit 1; }
 done
 mount --make-rprivate /
+findmnt -n -o PROPAGATION / | grep -Eq '(^|,)private($|,)' || {
+  echo "error: physical simulation mount propagation is not private" >&2
+  exit 1
+}
+# The inherited host sysfs superblock is associated with the outer network
+# namespace. Overmount it only inside this private mount namespace so sysfs and
+# netlink describe the same simulated physical router interfaces.
+mount -t sysfs -o nosuid,nodev,noexec sysfs /sys
 mount -t tmpfs tmpfs /run
 mkdir -p /run/home-virtual-router
 export HVR_INTERNAL_PHYSICAL_SIMULATION=1
@@ -221,14 +229,29 @@ check_ipfix() {
   check "$label" "$@" || { report_ipfix_failure; return 1; }
 }
 report_metrics_failure() {
-  local exporter_pid="<absent>" exporter_netns="<absent>"
+  local exporter_pid="<absent>" exporter_netns="<absent>" exporter_mntns="<absent>"
   [ ! -r "$METRICS_EXPORT_PID_FILE" ] || exporter_pid="$(cat "$METRICS_EXPORT_PID_FILE")"
-  case "$exporter_pid" in *[!0-9]*|'') ;; *) exporter_netns="$(readlink "/proc/$exporter_pid/ns/net" 2>/dev/null || echo '<exited>')" ;; esac
-  printf 'metrics failure diagnostic:\n  deployment mode: %s\n  harness netns: %s\n  router context netns: %s\n  configured LAN: %s\n  configured WAN: %s\n  exporter PID: %s\n  exporter netns: %s\n  interfaces visible in router context:\n' \
-    "$DEPLOYMENT_MODE" "$(readlink /proc/self/ns/net)" "$(router_context_namespace_identity 2>/dev/null || echo '<unreadable>')" \
-    "$ROUTER_LAN_INTERFACE" "$ROUTER_WAN_INTERFACE" "$exporter_pid" "$exporter_netns" >&2
+  case "$exporter_pid" in
+    *[!0-9]*|'') ;;
+    *)
+      exporter_netns="$(readlink "/proc/$exporter_pid/ns/net" 2>/dev/null || echo '<exited>')"
+      exporter_mntns="$(readlink "/proc/$exporter_pid/ns/mnt" 2>/dev/null || echo '<exited>')"
+      ;;
+  esac
+  printf 'metrics failure diagnostic:\n  deployment mode: %s\n  configured LAN: %q\n  configured WAN: %q\n  harness netns: %s\n  harness mountns: %s\n  router context netns: %s\n  router context mountns: %s\n  exporter PID: %s\n  exporter netns: %s\n  exporter mountns: %s\n  interfaces visible through netlink:\n' \
+    "$DEPLOYMENT_MODE" "$ROUTER_LAN_INTERFACE" "$ROUTER_WAN_INTERFACE" \
+    "$(readlink /proc/self/ns/net)" "$(readlink /proc/self/ns/mnt)" \
+    "$(router_context_namespace_identity net 2>/dev/null || echo '<unreadable>')" \
+    "$(router_context_namespace_identity mnt 2>/dev/null || echo '<unreadable>')" \
+    "$exporter_pid" "$exporter_netns" "$exporter_mntns" >&2
   router_context_prefix
   "${ROUTER_CONTEXT_PREFIX[@]}" ip -o link show >&2 || true
+  echo 'sysfs mount:' >&2
+  "${ROUTER_CONTEXT_PREFIX[@]}" findmnt -T /sys >&2 || true
+  echo '/sys/class/net:' >&2
+  "${ROUTER_CONTEXT_PREFIX[@]}" ls -la /sys/class/net >&2 || true
+  echo '/proc/net/dev:' >&2
+  "${ROUTER_CONTEXT_PREFIX[@]}" cat /proc/net/dev >&2 || true
   echo 'metrics collector stderr:' >&2
   sed 's/^/  /' "$simulation_metrics_error" >&2 2>/dev/null || echo '  <absent>' >&2
   echo 'metrics exporter log tail:' >&2
@@ -256,12 +279,31 @@ metrics_interfaces_ok() {
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); m=d["router"]["metrics"]; expected={"interface.rx_bytes","interface.tx_bytes","interface.rx_packets","interface.tx_packets","interface.rx_errors","interface.tx_errors","interface.rx_drops","interface.tx_drops","interface.operstate"}; actual={(x["interface"]["role"],x["name"]) for x in m if "interface" in x}; raise SystemExit(0 if all((role,name) in actual for role in ("lan","wan") for name in expected) else 1)' "$simulation_metrics_result"
 }
 metrics_collector_context_ok() {
-  [ "$(router_context_namespace_identity)" = "$(readlink /proc/1/ns/net)" ]
+  [ "$(router_context_namespace_identity net)" = "$(readlink /proc/1/ns/net)" ] &&
+    [ "$(router_context_namespace_identity mnt)" = "$(readlink /proc/1/ns/mnt)" ]
+}
+metrics_router_netlink_ok() {
+  router_context_prefix
+  "${ROUTER_CONTEXT_PREFIX[@]}" ip link show dev "$ROUTER_LAN_INTERFACE" >/dev/null &&
+    "${ROUTER_CONTEXT_PREFIX[@]}" ip link show dev "$ROUTER_WAN_INTERFACE" >/dev/null
+}
+metrics_router_sysfs_ok() {
+  router_context_prefix
+  "${ROUTER_CONTEXT_PREFIX[@]}" test -e "/sys/class/net/$ROUTER_LAN_INTERFACE" &&
+    "${ROUTER_CONTEXT_PREFIX[@]}" test -e "/sys/class/net/$ROUTER_WAN_INTERFACE"
+}
+metrics_router_proc_net_ok() {
+  router_context_prefix
+  "${ROUTER_CONTEXT_PREFIX[@]}" awk -F: -v lan="$ROUTER_LAN_INTERFACE" -v wan="$ROUTER_WAN_INTERFACE" '
+    { name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", name); seen[name]=1 }
+    END { exit !(seen[lan] && seen[wan]) }
+  ' /proc/net/dev
 }
 metrics_exporter_context_ok() {
   local pid
   pid="$(read_project_pid "$METRICS_EXPORT_PID_FILE")" || return 1
-  [ "$(readlink "/proc/$pid/ns/net")" = "$(router_context_namespace_identity)" ]
+  [ "$(readlink "/proc/$pid/ns/net")" = "$(router_context_namespace_identity net)" ] &&
+    [ "$(readlink "/proc/$pid/ns/mnt")" = "$(router_context_namespace_identity mnt)" ]
 }
 metrics_exporter_collection_healthy() {
   ! grep -F 'configured lan interface is absent' "$METRICS_EXPORT_LOG_FILE" >/dev/null 2>&1 &&
@@ -441,6 +483,9 @@ check "IPFIX data record decoded" ipfix_result_field records 1
 check "IPFIX required template fields" ipfix_result_field required_fields_complete true
 check "IPFIX pre-NAT client source preserved" ipfix_result_field client_source_preserved true
 check "IPFIX exact fresh ICMP record observed" ipfix_result_field expected_record_seen true
+check "metrics router netlink sees LAN/WAN" metrics_router_netlink_ok
+check "metrics router sysfs sees LAN/WAN" metrics_router_sysfs_ok
+check "metrics router proc net sees LAN/WAN" metrics_router_proc_net_ok
 check "metrics collector physical-router network context" metrics_collector_context_ok
 if ! collect_metrics_snapshot; then
   check "metrics collector invocation" false

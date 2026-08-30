@@ -709,21 +709,23 @@ process_is_running() {
 }
 
 # Populate ROUTER_CONTEXT_PREFIX with the command prefix for the configured router's
-# network context. The simulation target is fixed to its private PID-1 context;
+# execution context. The simulation target is fixed to its private PID-1 context;
 # callers cannot select an arbitrary production namespace.
 router_context_prefix() {
   if [ "$DEPLOYMENT_MODE" != physical ]; then
     ROUTER_CONTEXT_PREFIX=(ip netns exec "$ROUTER_NAMESPACE")
   elif [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-}" = 1 ]; then
-    ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --)
+    ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --mount=/proc/1/ns/mnt --)
   else
     ROUTER_CONTEXT_PREFIX=()
   fi
 }
 
 router_context_namespace_identity() {
+  local namespace="${1:-net}"
+  case "$namespace" in net|mnt) ;; *) return 1 ;; esac
   router_context_prefix
-  "${ROUTER_CONTEXT_PREFIX[@]}" readlink /proc/self/ns/net
+  "${ROUTER_CONTEXT_PREFIX[@]}" readlink "/proc/self/ns/$namespace"
 }
 
 process_is_pmacctd() {

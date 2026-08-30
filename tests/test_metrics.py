@@ -167,7 +167,7 @@ class MetricsCommandTests(unittest.TestCase):
         common = (root / "lab/scripts/topology-common.sh").read_text(encoding="utf-8")
         self.assertIn("router_context_prefix", wrapper)
         self.assertIn('ROUTER_CONTEXT_PREFIX=(ip netns exec "$ROUTER_NAMESPACE")', common)
-        self.assertIn("ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --)", common)
+        self.assertIn("ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --mount=/proc/1/ns/mnt --)", common)
         self.assertIn("ROUTER_CONTEXT_PREFIX=()", common)
         self.assertIn('--interface "lan=$ROUTER_LAN_INTERFACE"', wrapper)
         self.assertIn('--interface "wan=$ROUTER_WAN_INTERFACE"', wrapper)

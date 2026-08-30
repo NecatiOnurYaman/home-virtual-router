@@ -262,13 +262,34 @@ false
         self.assertIn("router_context_prefix", show)
         self.assertIn("router_context_prefix", exporter)
         self.assertIn('ROUTER_CONTEXT_PREFIX=(ip netns exec "$ROUTER_NAMESPACE")', common)
-        self.assertIn("ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --)", common)
+        self.assertIn("ROUTER_CONTEXT_PREFIX=(nsenter --net=/proc/1/ns/net --mount=/proc/1/ns/mnt --)", common)
         self.assertIn("ROUTER_CONTEXT_PREFIX=()", common)
         self.assertNotIn("hvr-sim", show + exporter)
         self.assertIn('>"$simulation_metrics_result" 2>"$simulation_metrics_error"', inner)
         self.assertLess(inner.index("collect_metrics_snapshot"), inner.index("metrics_role_ok lan"))
-        self.assertIn("interfaces visible in router context", inner)
+        self.assertIn("interfaces visible through netlink", inner)
         self.assertNotIn("json.load(sys.stdin)", inner)
+
+    def test_simulation_mounts_private_router_sysfs_after_isolation(self) -> None:
+        harness = SIMULATION.read_text(encoding="utf-8")
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        self.assertIn("unshare --mount --net --pid", harness)
+        self.assertLess(inner.index("mount --make-rprivate /"), inner.index("mount -t sysfs"))
+        self.assertIn("findmnt -n -o PROPAGATION /", inner)
+        self.assertIn("mount -t sysfs -o nosuid,nodev,noexec sysfs /sys", inner)
+        self.assertIn("metrics router netlink sees LAN/WAN", inner)
+        self.assertIn("metrics router sysfs sees LAN/WAN", inner)
+        self.assertIn("metrics router proc net sees LAN/WAN", inner)
+        self.assertIn("/sys/class/net", inner)
+        self.assertIn("/proc/net/dev", inner)
+        for generic in (
+            ROOT / "lab/scripts/show-metrics.sh",
+            ROOT / "lab/scripts/enable-metrics-export.sh",
+            ROOT / "physical/scripts/physical-common.sh",
+        ):
+            text = generic.read_text(encoding="utf-8")
+            self.assertNotIn("mount -t sysfs", text)
+            self.assertNotIn("hvr-sim", text)
 
     def test_simulation_client_is_prepared_and_bounded_safely(self) -> None:
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
