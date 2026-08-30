@@ -386,6 +386,27 @@ false
             self.assertIn(diagnostic, inner)
         self.assertIn("R13 physical simulation acceptance passed", inner)
 
+    def test_simulation_post_stop_teardown_uses_physical_state_constants(self) -> None:
+        inner = SIMULATION_INNER.read_text(encoding="utf-8")
+        teardown = inner[
+            inner.index("physical_runtime_absent()"):
+            inner.index("cleanup()")
+        ]
+        self.assertIn('[ ! -e "$PHYSICAL_RUNTIME_STATE" ]', teardown)
+        for state_path in (
+            "PHYSICAL_MAP_FILE", "PHYSICAL_WAN_ADDRESS_OWNED", "PHYSICAL_LAN_ADDRESS_OWNED",
+            "PHYSICAL_WAN_LINK_OWNED", "PHYSICAL_LAN_LINK_OWNED",
+            "PHYSICAL_DEFAULT_ROUTE_OWNED", "PHYSICAL_FORWARDING_ORIGINAL",
+        ):
+            self.assertIn(f'[ ! -e "${state_path}" ]', teardown)
+        self.assertNotIn("RUNTIME_STATE_FILE", teardown)
+        self.assertNotIn("set +u", teardown)
+        self.assertNotIn(":-", teardown)
+        self.assertLess(
+            inner.index('check "runtime-owned physical teardown"'),
+            inner.index("trap - EXIT"),
+        )
+
     def test_runtime_output_distinguishes_deployment_from_telemetry(self) -> None:
         start = RUNTIME_START.read_text(encoding="utf-8")
         self.assertIn("Deployment mode: %s", start)

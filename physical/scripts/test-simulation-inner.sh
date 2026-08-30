@@ -332,7 +332,15 @@ runtime_status_physical() { "$repo_dir/lab/scripts/runtime-status.sh" | grep -F 
 physical_runtime_absent() {
   ! physical_address_exists hvr-sim-wan 203.0.113.2/24 &&
     ! physical_address_exists hvr-sim-lan 10.0.0.1/24 &&
-    ! nat_table_exists && ! filter_table_exists && [ ! -e "$RUNTIME_STATE_FILE" ]
+    ! nat_table_exists && ! filter_table_exists &&
+    [ ! -e "$PHYSICAL_RUNTIME_STATE" ] &&
+    [ ! -e "$PHYSICAL_MAP_FILE" ] &&
+    [ ! -e "$PHYSICAL_WAN_ADDRESS_OWNED" ] &&
+    [ ! -e "$PHYSICAL_LAN_ADDRESS_OWNED" ] &&
+    [ ! -e "$PHYSICAL_WAN_LINK_OWNED" ] &&
+    [ ! -e "$PHYSICAL_LAN_LINK_OWNED" ] &&
+    [ ! -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] &&
+    [ ! -e "$PHYSICAL_FORWARDING_ORIGINAL" ]
 }
 cleanup() {
   set +e
