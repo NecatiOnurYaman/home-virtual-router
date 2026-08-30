@@ -4,6 +4,111 @@ R14 validates the accepted R13 runtime on a Linux host with two explicitly confi
 
 R14 has two levels. Core acceptance requires real NIC preflight, start, real-client DHCP/DNS/routing, observed NAT, controlled unsolicited-WAN blocking, decoded IPFIX, metrics movement, repeated start, runtime health, stop, restoration, and residue checks. Extended acceptance separately covers optional HNOP delivery, systemd/reboot, link loss, and safe configuration drift. `NOT RUN` is not `PASS`.
 
+## Ubuntu R14 command sequence
+
+Run these regression checks in the Ubuntu repository before preparing or touching real hardware:
+
+```sh
+cd ~/home-virtual-router
+git pull
+make check
+make test
+sudo make physical-sim-test
+sudo make runtime-test
+```
+
+These must pass before an R14 hardware run. They prove the accepted R13 simulation and R12 lifecycle remain green; they do not constitute real-hardware acceptance.
+
+Next prepare the authoritative machine-local configuration and authorization files:
+
+```sh
+sudo install -d -o root -g root -m 0750 /etc/home-virtual-router
+sudo test ! -e /etc/home-virtual-router/router.env
+sudo install -o root -g root -m 0640 config/physical.example.env /etc/home-virtual-router/router.env
+sudo editor /etc/home-virtual-router/router.env
+sudo install -o root -g root -m 0640 /dev/null /etc/home-virtual-router/allow-physical-deployment
+```
+
+`/etc/home-virtual-router/router.env` must explicitly contain machine-appropriate placeholder replacements for at least:
+
+- `DEPLOYMENT_MODE=physical`
+- `PHYSICAL_WAN_INTERFACE` and `PHYSICAL_LAN_INTERFACE`
+- `PHYSICAL_WAN_ADDRESS`, `PHYSICAL_WAN_PREFIX_LENGTH`, and `PHYSICAL_WAN_GATEWAY`
+- `LAN_SUBNET` and `ROUTER_LAN`
+- `DHCP_RANGE_START`, `DHCP_RANGE_END`, `DHCP_DNS_SERVER`, and `DHCP_LEASE_TIME`
+- `DNS_UPSTREAM` and the existing deterministic DNS test values
+- `IPFIX_CAPTURE_INTERFACE`, `IPFIX_COLLECTOR_HOST`, and `IPFIX_COLLECTOR_PORT`
+- `METRICS_EXPORT_HOST`, `METRICS_EXPORT_PORT`, `METRICS_EXPORT_PATH`, and `ROUTER_ID`
+- `PHYSICAL_MANAGEMENT_INTERFACE_ACK` when the configured WAN or LAN currently carries the management/default route
+
+Do not copy real values into Git. The authorization marker is `/etc/home-virtual-router/allow-physical-deployment`; neither path is configurable.
+
+Run the read-only real-hardware check:
+
+```sh
+sudo make physical-hardware-check
+```
+
+This command must not mutate addresses, routes, links, forwarding, nftables, or processes. Stop if it reports an interface identity, network-manager, authorization, configuration, management-route, dependency, or runtime-state failure.
+
+Start core acceptance from a local console and a residue-free runtime:
+
+```sh
+sudo make physical-hardware-test-start
+```
+
+Pause here. Connect the real wired LAN client, renew DHCP, and record its leased IPv4 address and MAC. Confirm its prefix, default gateway, and DNS server; query HVR directly for the deterministic and upstream DNS names; then generate ICMP toward a controlled upstream IPv4 target. Start the real IPFIX decoder before generating the fresh marked ICMP flow and retain its JSON result on the HVR host.
+
+Set local shell placeholders without committing them:
+
+```sh
+R14_CLIENT_MAC='REPLACE_WITH_CLIENT_MAC'
+R14_CLIENT_IP='REPLACE_WITH_LEASED_CLIENT_IPV4'
+R14_UPSTREAM_TARGET='REPLACE_WITH_CONTROLLED_TARGET_IPV4'
+R14_UPSTREAM_PEER='REPLACE_WITH_CONTROLLED_PEER_IPV4'
+R14_IPFIX_RESULT='/absolute/path/to/real-ipfix-result.json'
+```
+
+Run the bounded NAT observation, and while it waits generate the same ICMP flow from the LAN client:
+
+```sh
+sudo make physical-hardware-test-observe-nat \
+  R14_CLIENT_IP="$R14_CLIENT_IP" \
+  R14_UPSTREAM_TARGET="$R14_UPSTREAM_TARGET"
+```
+
+Do not continue until it observes the configured HVR WAN source. Next configure the controlled upstream peer's narrow route to the HVR LAN through HVR's WAN address. Run the firewall observation and, while it waits, send the documented ICMP probe from that peer toward the client:
+
+```sh
+sudo make physical-hardware-test-observe-firewall \
+  R14_CLIENT_IP="$R14_CLIENT_IP" \
+  R14_UPSTREAM_PEER="$R14_UPSTREAM_PEER"
+```
+
+Do not continue unless the probe was observed on WAN and absent on LAN. With the real decoder JSON now present, verify all accumulated evidence:
+
+```sh
+sudo make physical-hardware-test-verify \
+  R14_CLIENT_MAC="$R14_CLIENT_MAC" \
+  R14_CLIENT_IP="$R14_CLIENT_IP" \
+  R14_UPSTREAM_TARGET="$R14_UPSTREAM_TARGET" \
+  R14_IPFIX_RESULT="$R14_IPFIX_RESULT"
+```
+
+Only after verification, stop the runtime and verify restoration:
+
+```sh
+sudo make physical-hardware-test-stop
+```
+
+Run the residue commands in the recovery section below. If optional reboot validation is desired, perform the manual reboot while the R14 checkpoint still exists—after `physical-hardware-test-start` and before `physical-hardware-test-stop`—then run:
+
+```sh
+sudo make physical-hardware-test-post-reboot
+```
+
+The project never invokes `reboot` or changes systemd persistence. After the post-reboot check, repeat the applicable real-client checks and finish with `physical-hardware-test-stop`.
+
 ## Preparation and safety
 
 Use a local console for the first run. SSH through either configured NIC can be lost. Prepare a complete root-owned `/etc/home-virtual-router/router.env` from `config/physical.example.env`; replace every documentation address and set exact `PHYSICAL_WAN_INTERFACE`, `PHYSICAL_LAN_INTERFACE`, static WAN/gateway, LAN/DHCP, DNS, IPFIX collector, and metrics receiver values. Keep the two NICs unmanaged using the distro's normal per-interface configuration. Do not disable NetworkManager or systemd-networkd globally.
@@ -114,9 +219,16 @@ test ! -e /run/home-virtual-router/physical/wan-link-owned
 test ! -e /run/home-virtual-router/physical/lan-link-owned
 test ! -e /run/home-virtual-router/physical/default-route-owned
 test ! -e /run/home-virtual-router/physical/forwarding-original
+test ! -e /run/home-virtual-router/dhcp/dnsmasq.pid
+test ! -e /run/home-virtual-router/dns/enabled
 test ! -e /run/home-virtual-router/ipfix/pmacctd.pid
+test ! -e /run/home-virtual-router/ipfix/pmacctd.starttime
+test ! -e /run/home-virtual-router/ipfix/nfprobe.pid
+test ! -e /run/home-virtual-router/ipfix/nfprobe.starttime
 test ! -e /run/home-virtual-router/metrics-export/exporter.pid
 test ! -e /run/home-virtual-router/metrics-export/exporter.starttime
+test ! -e /var/lib/home-virtual-router/r14/checkpoint.env
+test ! -e /var/lib/home-virtual-router/r14/default-routes.before
 ! sudo nft list table ip hvr-nat
 ! sudo nft list table inet hvr-filter
 ```
