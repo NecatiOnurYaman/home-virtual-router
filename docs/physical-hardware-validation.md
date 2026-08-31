@@ -1,12 +1,20 @@
-# R14 physical hardware validation
+# R14 virtual-router deployment validation
 
-R14 validates the accepted R13 runtime on a Linux host with two explicitly configured Ethernet-class NICs: a static-IPv4 WAN connected to an upstream network and a LAN connected to a real wired client. It does not support WAN DHCP, PPPoE, VLAN tagging, Wi-Fi AP mode, bridging, IPv6 routing, multi-WAN, VPN, QoS, UPnP, or port forwarding. R14 never guesses an interface.
+R14 validates the accepted R13 runtime on an Ubuntu router host with two explicitly configured, pre-existing Ethernet deployment interfaces: a static-IPv4 WAN connected to an upstream network and a LAN connected to an external downstream client. `DEPLOYMENT_MODE=physical` is the legacy compatibility name for this host-interface mode; it does not require bare-metal NICs. UTM/QEMU VirtIO, other VM Ethernet interfaces, and conventional PCI/USB Ethernet are valid when they satisfy the same Linux interface and ownership checks. R14 never guesses an interface.
 
-R14 has two levels. Core acceptance requires real NIC preflight, start, real-client DHCP/DNS/routing, observed NAT, controlled unsolicited-WAN blocking, decoded IPFIX, metrics movement, repeated start, runtime health, stop, restoration, and residue checks. Extended acceptance separately covers optional HNOP delivery, systemd/reboot, link loss, and safe configuration drift. `NOT RUN` is not `PASS`.
+R14 has two levels. Core acceptance requires deployment-interface preflight, start, external-client DHCP/DNS/routing, observed NAT, controlled unsolicited-WAN blocking, decoded IPFIX, metrics movement, repeated start, runtime health, stop, restoration, and residue checks. Extended acceptance separately covers optional HNOP delivery, post-reboot inspection, link loss, and safe configuration drift. Persistent background operation belongs to R15. `NOT RUN` is not `PASS`.
+
+## Supported UTM topology
+
+The intended deployment is an Ubuntu UTM guest acting as the router. One UTM-supplied Ethernet interface provides WAN/upstream connectivity and a second UTM-supplied Ethernet interface connects to an isolated, host-only, shared, or custom downstream segment appropriate to the operator's UTM version. HVR runs in the Ubuntu host network context: DHCP/DNS bind to LAN, NAT and the stateful firewall forward between LAN and WAN, IPFIX captures the LAN client pre-NAT, and metrics retain semantic `lan` and `wan` roles.
+
+The interfaces may use `virtio_net`, emulated Ethernet, or another normal Linux Ethernet driver. R14 does not require a PCI or USB device and has no driver allowlist. It does require two distinct explicit interfaces with stable name/ifindex/MAC identity. It rejects loopback, HVR's R2 lab interface names, ordinary veth deployment targets, and Linux bridges such as Docker bridges. The R13 simulation retains its explicit private veth exception.
+
+An external downstream client is any system outside HVR's internal R2 namespace topology that sends traffic through the configured deployment LAN interface. It may be another VM, another UTM guest, a host-connected virtual-network participant, or a physical machine; it does not need to be physically wired.
 
 ## Ubuntu R14 command sequence
 
-Run these regression checks in the Ubuntu repository before preparing or touching real hardware:
+Run these regression checks in the Ubuntu repository before preparing or touching deployment interfaces:
 
 ```sh
 cd ~/home-virtual-router
@@ -17,7 +25,7 @@ sudo make physical-sim-test
 sudo make runtime-test
 ```
 
-These must pass before an R14 hardware run. They prove the accepted R13 simulation and R12 lifecycle remain green; they do not constitute real-hardware acceptance.
+These must pass before an R14 deployment run. They prove the accepted R13 simulation and R12 lifecycle remain green; they do not constitute two-vNIC virtual-router acceptance.
 
 Next prepare the authoritative machine-local configuration and authorization files:
 
@@ -43,7 +51,7 @@ sudo install -o root -g root -m 0640 /dev/null /etc/home-virtual-router/allow-ph
 
 Do not copy real values into Git. The authorization marker is `/etc/home-virtual-router/allow-physical-deployment`; neither path is configurable.
 
-Run the read-only real-hardware check:
+Run the read-only deployment-interface check:
 
 ```sh
 sudo make physical-hardware-check
@@ -57,7 +65,7 @@ Start core acceptance from a local console and a residue-free runtime:
 sudo make physical-hardware-test-start
 ```
 
-Pause here. Connect the real wired LAN client, renew DHCP, and record its leased IPv4 address and MAC. Confirm its prefix, default gateway, and DNS server; query HVR directly for the deterministic and upstream DNS names; then generate ICMP toward a controlled upstream IPv4 target. Start the real IPFIX decoder before generating the fresh marked ICMP flow and retain its JSON result on the HVR host.
+Pause here. Connect the external downstream client, renew DHCP, and record its leased IPv4 address and MAC. Confirm its prefix, default gateway, and DNS server; query HVR directly for the deterministic and upstream DNS names; then generate ICMP toward a controlled upstream IPv4 target. Start the IPFIX decoder before generating the fresh marked ICMP flow and retain its JSON result on the HVR host.
 
 Set local shell placeholders without committing them:
 
@@ -111,7 +119,7 @@ The project never invokes `reboot` or changes systemd persistence. After the pos
 
 ## Preparation and safety
 
-Use a local console for the first run. SSH through either configured NIC can be lost. Prepare a complete root-owned `/etc/home-virtual-router/router.env` from `config/physical.example.env`; replace every documentation address and set exact `PHYSICAL_WAN_INTERFACE`, `PHYSICAL_LAN_INTERFACE`, static WAN/gateway, LAN/DHCP, DNS, IPFIX collector, and metrics receiver values. Keep the two NICs unmanaged using the distro's normal per-interface configuration. Do not disable NetworkManager or systemd-networkd globally.
+Use a local console for the first run. SSH through either configured interface can be lost. Prepare a complete root-owned `/etc/home-virtual-router/router.env` from `config/physical.example.env`; replace every documentation address and set exact `PHYSICAL_WAN_INTERFACE`, `PHYSICAL_LAN_INTERFACE`, static WAN/gateway, LAN/DHCP, DNS, IPFIX collector, and metrics receiver values. Keep the two deployment interfaces unmanaged using the distro's normal per-interface configuration. Do not disable NetworkManager or systemd-networkd globally.
 
 Create the existing deliberate authorization marker and run the read-only checks:
 
@@ -135,7 +143,7 @@ sudo make runtime-check
 
 The start phase snapshots HVR-owned baseline state, starts through the R12/R13 lifecycle, records metrics, performs a second start, and requires an identical route/address/nftables/process signature.
 
-Connect a real client to LAN and renew DHCP. On Linux use `sudo dhclient -r <client-iface>` then `sudo dhclient -v <client-iface>`; on macOS use `sudo ipconfig set <client-iface> DHCP`. Inspect the client and confirm its address is inside the configured pool, its prefix is the LAN prefix, and both default gateway and DNS server are HVR's LAN address. Do not record a client MAC in Git.
+Connect an external downstream client to the deployment LAN and renew DHCP. On Linux use `sudo dhclient -r <client-iface>` then `sudo dhclient -v <client-iface>`; on macOS use `sudo ipconfig set <client-iface> DHCP`. Inspect the client and confirm its address is inside the configured pool, its prefix is the LAN prefix, and both default gateway and DNS server are HVR's LAN address. Do not record a client MAC in Git.
 
 Query HVR directly and generate a recognizable flow toward an operator-controlled upstream IPv4 target:
 
@@ -189,7 +197,7 @@ This uses `runtime-stop`, then requires forwarding and default routes to match t
 
 HNOP is optional. With the existing R9/R11 contract, verify a fresh `POST /v1/router-metrics` has the configured `router_id`, timestamp, and real LAN/WAN roles. Basic router acceptance does not require HNOP.
 
-R14 never installs/enables systemd or reboots. If the operator explicitly installs the unit rendered by `make systemd-show`, validate it using normal `systemctl daemon-reload`, `enable`, `start`, `status`, and later `disable`/removal commands. The start phase places its non-secret NIC-identity checkpoint at `/var/lib/home-virtual-router/r14/checkpoint.env`; afterward run `sudo make physical-hardware-test-post-reboot`. With no enabled unit it requires no runtime residue; with an enabled unit it requires `runtime-check`. Revalidate the real client afterward. The normal stop phase removes the checkpoint.
+R14 never installs/enables systemd or reboots. Its optional command only inspects state after an operator-initiated reboot. The start phase places its non-secret interface-identity checkpoint at `/var/lib/home-virtual-router/r14/checkpoint.env`; afterward run `sudo make physical-hardware-test-post-reboot`. Revalidate the external client afterward. R15—not R14—will own systemd installation, boot ordering, automatic startup, restart policy, long-running background operation, and shutdown acceptance. The normal stop phase removes the checkpoint.
 
 For link loss, unplug one non-management-critical cable manually, run `sudo make runtime-check`, record whether carrier degradation is reported and whether dnsmasq/IPFIX/exporter remain alive, reconnect, then run `runtime-check` again. R14 does not promise or add self-healing. Never programmatically lower a management-critical link.
 
@@ -233,4 +241,4 @@ test ! -e /var/lib/home-virtual-router/r14/default-routes.before
 ! sudo nft list table inet hvr-filter
 ```
 
-R13 simulation and CI can validate harness safety but cannot pass R14. Only a supported physical Linux host, two real NICs, a real client, and all required core proofs can establish R14 hardware acceptance.
+R13 simulation and CI can validate harness safety but cannot pass R14. Only an Ubuntu deployment with two pre-existing host-visible interfaces, an external downstream client outside R2, and all required core proofs can establish R14 deployment acceptance. A current one-vNIC UTM guest must stop here: add a second UTM network adapter, reboot the guest, inventory `ip -br link`, `ip -br addr`, `ip -4 route`, `nmcli device status 2>/dev/null || true`, and `networkctl list 2>/dev/null || true`, then configure the exact observed WAN/LAN names. Never guess the second name.

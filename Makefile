@@ -1,14 +1,14 @@
 .PHONY: help check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test physical-hardware-check physical-hardware-test-start physical-hardware-test-observe-nat physical-hardware-test-observe-firewall physical-hardware-test-verify physical-hardware-test-stop physical-hardware-test-post-reboot systemd-show
 
 help:
-	@echo "R14 physical hardware validation targets:"
-	@echo "  physical-hardware-check                 read-only real-NIC preflight"
+	@echo "R14 deployed virtual-router validation targets (legacy target names retained):"
+	@echo "  physical-hardware-check                 read-only deployment-interface preflight"
 	@echo "  physical-hardware-test-start            start and verify repeated convergence"
 	@echo "  physical-hardware-test-observe-nat      bounded translated-source capture"
 	@echo "  physical-hardware-test-observe-firewall bounded controlled WAN-to-LAN block proof"
 	@echo "  physical-hardware-test-verify           verify client, IPFIX, metrics, and runtime evidence"
 	@echo "  physical-hardware-test-stop             stop and verify restoration/residue"
-	@echo "  physical-hardware-test-post-reboot      inspect state after an operator-initiated reboot"
+	@echo "  physical-hardware-test-post-reboot      optional inspection after an operator-initiated reboot"
 	@echo "See docs/physical-hardware-validation.md for required arguments and exact order."
 
 check:
@@ -185,7 +185,7 @@ runtime-test:
 	sudo lab/scripts/test-runtime.sh
 
 physical-check:
-	@echo "Running the read-only R13 physical deployment preflight requires root."
+	@echo "Running the read-only R13 host-interface deployment preflight requires root."
 	sudo physical/scripts/preflight.sh
 
 physical-sim-test:
@@ -193,11 +193,11 @@ physical-sim-test:
 	sudo physical/scripts/test-simulation.sh
 
 physical-hardware-check:
-	@echo "R14 REAL HARDWARE READ-ONLY CHECK: configured WAN/LAN NICs will be inspected, not changed."
+	@echo "R14 DEPLOYED ROUTER READ-ONLY CHECK: configured host-visible WAN/LAN interfaces will be inspected, not changed."
 	sudo physical/scripts/hardware-check.sh
 
 physical-hardware-test-start:
-	@echo "R14 REAL HARDWARE VALIDATION: this modifies the two explicitly configured physical NICs."
+	@echo "R14 DEPLOYED ROUTER VALIDATION: this modifies the two explicitly configured pre-existing interfaces."
 	sudo physical/scripts/hardware-test.sh start
 
 physical-hardware-test-observe-nat:
@@ -209,7 +209,7 @@ physical-hardware-test-observe-firewall:
 	sudo physical/scripts/hardware-test.sh observe-firewall --client-ip "$(R14_CLIENT_IP)" --upstream-peer "$(R14_UPSTREAM_PEER)"
 
 physical-hardware-test-verify:
-	@echo "R14 verification requires real-client identity and decoded IPFIX evidence."
+	@echo "R14 verification requires external-client identity and decoded IPFIX evidence."
 	sudo physical/scripts/hardware-test.sh verify --client-mac "$(R14_CLIENT_MAC)" --client-ip "$(R14_CLIENT_IP)" --target "$(R14_UPSTREAM_TARGET)" --ipfix-result "$(R14_IPFIX_RESULT)"
 
 physical-hardware-test-stop:

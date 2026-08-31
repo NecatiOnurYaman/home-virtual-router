@@ -70,7 +70,7 @@ start_test() {
   [ ! -e "$RUNTIME_STATE_FILE" ] && r14_runtime_residue_absent || die "R14 core start requires an absent, residue-free HVR runtime"
   r14_prepare_report; : > "$R14_SUMMARY"; r14_capture_inventory "$R14_DIR/hardware-before.txt"; r14_write_checkpoint
   r14_result "Preflight" PASS
-  printf 'R14 REAL HARDWARE VALIDATION\nWAN: %s\nLAN: %s\nThis test will modify networking on these exact interfaces.\n' "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_LAN_INTERFACE"
+  printf 'R14 DEPLOYED ROUTER VALIDATION\nWAN: %s\nLAN: %s\nThis test will modify networking on these exact pre-existing interfaces.\n' "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_LAN_INTERFACE"
   "$repo_dir/lab/scripts/runtime-start.sh"
   r14_check "First start" "$repo_dir/lab/scripts/runtime-check.sh"
   "$repo_dir/lab/scripts/show-metrics.sh" > "$R14_METRICS_BEFORE"
@@ -153,13 +153,13 @@ stop_test() {
   rm -f -- "$R14_CHECKPOINT" "$R14_DEFAULT_ROUTES_BEFORE"
   rmdir "$R14_PERSIST_DIR" 2>/dev/null || true
   if [ "$core_evidence" -eq 1 ]; then
-    r14_result "R14 hardware acceptance" PASS
-    echo "R14 physical hardware core acceptance passed."
+    r14_result "R14 deployment acceptance" PASS
+    echo "R14 deployed virtual-router core acceptance passed."
   else
-    r14_result "R14 hardware acceptance" "NOT RUN"
+    r14_result "R14 deployment acceptance" "NOT RUN"
     echo "R14 teardown passed, but core acceptance was not completed."
   fi
-  echo 'R14 Physical Hardware Acceptance'
+  echo 'R14 Virtual-Router Deployment Acceptance'
   awk -F '\t' '{latest[$1]=$2; order[++count]=$1} END {for(i=1;i<=count;i++) if(!seen[order[i]]++) printf "%-34s %s\n", order[i], latest[order[i]]}' "$R14_SUMMARY"
 }
 

@@ -9,7 +9,7 @@ Use `make runtime-start`, `runtime-status`, `runtime-check`, `runtime-restart`, 
 - `lab` sends IPFIX and metrics to `hvr-upstream` and creates no host telemetry veth.
 - `observability` creates the R9 `hvr-obs-host`/`hvr-observe` link before starting exporters.
 
-`DEPLOYMENT_MODE` is independent: lab executes router commands in `hvr-router`; physical executes exact project operations in the host network namespace against configured NICs. R13 physical mode accepts `TELEMETRY_MODE=lab` only; the namespace-specific R9 observability veth is never created on a physical host.
+`DEPLOYMENT_MODE` is independent: lab executes router commands in `hvr-router`; physical executes exact project operations in the host network namespace against explicit pre-existing interfaces. “Physical” is compatibility terminology and includes UTM/QEMU VirtIO and other VM-provided Ethernet interfaces; it does not imply bare-metal hardware. R13 physical mode accepts `TELEMETRY_MODE=lab` only; the namespace-specific R9 observability veth is never created in host-interface deployment.
 
 `IPFIX_ENABLED` and `METRICS_EXPORT_ENABLED` continue to control their exporters. An unreachable receiver does not stop the core router: exporters remain locally healthy and log delivery failures. A missing or identity-invalid local exporter is degraded or inconsistent.
 

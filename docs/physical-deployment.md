@@ -1,6 +1,6 @@
-# R13 physical router deployment
+# R13 host-interface deployment
 
-R13 implements conservative static-IPv4 physical deployment. It does not claim R14 hardware validation. Physical mode runs forwarding, project nftables tables, dnsmasq, pmacct, and metrics export in the Linux host network namespace; lab mode remains inside `hvr-router`.
+R13 implements conservative static-IPv4 host-interface deployment. The existing `DEPLOYMENT_MODE=physical`, `PHYSICAL_*`, and `physical/*` names are compatibility terminology: “physical” means HVR operates in the Linux host context against explicitly configured pre-existing interfaces. Those interfaces may be UTM/QEMU VirtIO or other VM NICs, TAP-backed guest interfaces, PCI/USB Ethernet, or other normal Linux Ethernet interfaces; bare-metal hardware is not required. Lab mode remains inside `hvr-router`.
 
 ## Configuration and authorization
 
@@ -15,7 +15,7 @@ sudo install -o root -g root -m 0640 config/physical.example.env /etc/home-virtu
 sudo editor /etc/home-virtual-router/router.env
 ```
 
-Set exact WAN/LAN kernel names, static WAN address/prefix/gateway, LAN values, DNS upstream, IPFIX collector, and metrics receiver. No interface is guessed. WAN and LAN must differ; loopback, missing interfaces, collisions, unsupported modes, and conflicting addresses/routes fail closed. Replace all documentation addresses before hardware use.
+Set exact WAN/LAN kernel names, static WAN address/prefix/gateway, LAN values, DNS upstream, IPFIX collector, and metrics receiver. No interface is guessed. WAN and LAN must be distinct eligible Ethernet deployment interfaces; loopback, HVR lab interfaces, veths outside the R13 simulation, Linux bridges, missing interfaces, collisions, unsupported modes, and conflicting addresses/routes fail closed. Driver or PCI/USB backing is not allowlisted. Replace all documentation addresses before deployment use.
 
 Physical mutation also requires a fixed marker which the software never creates:
 
@@ -30,7 +30,7 @@ Both files must be root-owned and not group/world writable. Environment variable
 
 Prefer a local appliance console for first deployment. A separate management NIC is recommended, but it must use specific management routes rather than a competing default route because the static WAN owns the router default path. Never first deploy over SSH through WAN or LAN unless disconnect is expected.
 
-Preflight identifies the current default-route interface. If it equals WAN or LAN, `PHYSICAL_MANAGEMENT_INTERFACE_ACK` must equal that exact name; default `none` rejects takeover. NetworkManager and systemd-networkd are queried per configured NIC, and managed NICs are rejected. R13 never stops/disables a manager, rewrites Netplan, or generates manager configuration. Prepare dedicated NICs as unmanaged with normal host administration.
+Preflight identifies the current default-route interface. If it equals WAN or LAN, `PHYSICAL_MANAGEMENT_INTERFACE_ACK` must equal that exact name; default `none` rejects takeover. NetworkManager and systemd-networkd are queried per configured deployment interface, and managed interfaces are rejected. R13 never stops/disables a manager, rewrites Netplan, or generates manager configuration. Prepare the explicit deployment interfaces as unmanaged with normal host administration.
 
 `sudo make physical-check` is read-only. It reports authorization, interface/address/link state, static addresses, gateway, telemetry setting, current default interface, and forwarding.
 
@@ -42,7 +42,7 @@ Routing snapshots `net.ipv4.ip_forward`. Prior `1` remains `1`; an HVR-owned `0`
 
 Physical DHCP runs only project dnsmasq bound to exact LAN; there is no physical dhclient. DNS reuses that process with cache/native logging and explicit upstream, then validates LAN UDP/TCP listeners and rejects WAN/wildcard listeners. `/etc/resolv.conf` is unchanged.
 
-IPFIX runs pmacctd/nfprobe on the host and captures IPv4 on physical LAN before NAT, preserving v10 and destination configuration. R10 reads host `/proc` and `/sys/class/net` using unchanged semantic `lan`/`wan` schema. R11 runs on the host and preserves its HTTP POST protocol. R13 opens no telemetry firewall holes.
+IPFIX runs pmacctd/nfprobe on the host and captures IPv4 on the deployment LAN before NAT, preserving v10 and destination configuration. R10 reads host `/proc` and `/sys/class/net` using unchanged semantic `lan`/`wan` schema. R11 runs on the host and preserves its HTTP POST protocol. R13 opens no telemetry firewall holes.
 
 The R12 start/stop/restart/status/check order and lock remain. Versioned state records deployment mode; `config.snapshot` and `physical/interface-map.env` bind the active runtime to exact NICs. Config changes while active are inconsistent and never migrate interfaces. Physical stage failures perform exact local rollback, followed by normal R12 reverse rollback. Failed cleanup remains visible rather than being treated as success.
 
@@ -56,11 +56,11 @@ The Linux-only simulation requires root and `unshare`. It generates an ephemeral
 sudo make physical-sim-test
 ```
 
-It proves cold start, exact physical addresses/routes/forwarding/nftables state, a real dynamic client lease, routed/NAT-observed ICMP, LAN-only DNS with a bounded query, LAN-side IPFIX configuration/process health, physical LAN/WAN metric identity, metrics-exporter health, repeated start/status/check, repeated stop, and restoration without real NICs. The temporary upstream DNS helper, DHCP client, namespaces, and files are allowlisted and removed on success or failure. It is not R14.
+It proves cold start, exact host-interface addresses/routes/forwarding/nftables state, a dynamic simulated-client lease, routed/NAT-observed ICMP, LAN-only DNS with a bounded query, LAN-side IPFIX configuration/process health, semantic LAN/WAN metric identity, metrics-exporter health, repeated start/status/check, repeated stop, and restoration inside isolated simulated interfaces. The temporary upstream DNS helper, DHCP client, namespaces, and files are allowlisted and removed on success or failure. It is not R14 deployment acceptance.
 
 Physical runtime paths are initialized by their owning stage rather than by lab R2 side effects. The runtime orchestrator owns `/run/home-virtual-router/runtime` at `0750`; physical topology/routing owns `physical` at `0750`; physical DHCP prepares `dhcp` as root-owned `0755` before rendering dnsmasq configuration; DNS owns `dns` at `0755`; IPFIX owns `ipfix` at `0750`; and R11 owns `metrics-export`. Stage teardown removes only its known files and removes an empty directory where its existing lifecycle supports that operation.
 
-For first hardware work, keep systemd disabled, use a local console, prepare dedicated unmanaged NICs, install/edit config, create the marker, then run:
+For first host-interface deployment, keep systemd disabled, use a local console, prepare two explicit unmanaged deployment interfaces, install/edit config, create the marker, then run:
 
 ```sh
 sudo make physical-check
@@ -72,4 +72,4 @@ sudo make runtime-check
 
 On failure inspect `/run/home-virtual-router/runtime/startup.log`, `last-error`, state/config snapshot, and `/run/home-virtual-router/physical/`. Restore the original configuration before `runtime-stop`; never delete ownership files or nftables tables blindly. The R12 unit can be rendered and verified but is never installed/enabled automatically.
 
-R14 must validate real WAN/client DHCP/DNS/NAT/firewall/IPFIX/metrics, reboot, cables, NIC recovery, and optional HNOP integration. R13 excludes WAN DHCP, PPPoE, ISP VLANs, IPv6, Wi-Fi AP, bridging, VLAN switching, multi-WAN/failover, QoS, port forwarding, UPnP/NAT-PMP/PCP, VPN, TLS/auth, SNMP, manager reconfiguration, automatic NIC discovery, and appliance images.
+R14 validates an external WAN/client path using pre-existing host interfaces, including a two-vNIC Ubuntu UTM deployment. R15 owns persistent background service operation, boot ordering, automatic startup, restart policy, and shutdown behavior. R13 excludes WAN DHCP, PPPoE, ISP VLANs, IPv6, Wi-Fi AP, bridging, VLAN switching, multi-WAN/failover, QoS, port forwarding, UPnP/NAT-PMP/PCP, VPN, TLS/auth, SNMP, manager reconfiguration, automatic NIC discovery, and appliance images.

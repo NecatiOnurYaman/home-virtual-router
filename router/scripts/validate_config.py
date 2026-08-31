@@ -175,9 +175,17 @@ def validate(values: dict[str, str]) -> None:
         telemetry_if = values["PHYSICAL_TELEMETRY_INTERFACE"]
         for key, value in (("PHYSICAL_WAN_INTERFACE", wan), ("PHYSICAL_LAN_INTERFACE", lan_if)):
             if value in {"unset", "none", "lo"} or not INTERFACE.fullmatch(value):
-                raise ValueError(f"{key} must name an explicit non-loopback Linux interface")
+                raise ValueError(f"{key} must name an explicit non-loopback deployment interface")
         if wan == lan_if:
-            raise ValueError("physical WAN and LAN interfaces must be different")
+            raise ValueError("R14 requires two distinct configured deployment interfaces: WAN and LAN")
+        lab_interfaces = {
+            values[key] for key in (
+                "UPSTREAM_INTERFACE", "ROUTER_WAN_INTERFACE", "ROUTER_LAN_INTERFACE",
+                "CLIENT_INTERFACE", "TELEMETRY_HOST_INTERFACE", "TELEMETRY_ROUTER_INTERFACE",
+            )
+        }
+        if wan in lab_interfaces or lan_if in lab_interfaces:
+            raise ValueError("deployment interfaces must not reuse an HVR lab-owned interface name")
         if telemetry_if != "none":
             raise ValueError("R13 physical telemetry interface deployment is deferred; use none")
         if values["PHYSICAL_MANAGEMENT_INTERFACE_ACK"] not in {"none", wan, lan_if}:

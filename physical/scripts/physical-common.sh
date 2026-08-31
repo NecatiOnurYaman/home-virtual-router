@@ -44,6 +44,18 @@ require_physical_authorization() {
 physical_interface_exists() { ip link show dev "$1" >/dev/null 2>&1; }
 physical_interface_is_up() { ip -o link show dev "$1" | grep -q '<[^>]*UP[^>]*>'; }
 physical_address_exists() { ip -o -4 address show dev "$1" | awk '{print $4}' | grep -F -x -- "$2" >/dev/null; }
+physical_interface_is_deployment_eligible() {
+  local interface="$1" lab_interface
+  [ "$interface" != lo ] && [ "$(cat "/sys/class/net/$interface/type" 2>/dev/null)" = 1 ] || return 1
+  for lab_interface in "$UPSTREAM_INTERFACE" "$ROUTER_WAN_INTERFACE" "$ROUTER_LAN_INTERFACE" \
+    "$CLIENT_INTERFACE" "$TELEMETRY_HOST_INTERFACE" "$TELEMETRY_ROUTER_INTERFACE"; do
+    [ "$interface" != "$lab_interface" ] || return 1
+  done
+  [ ! -e "/sys/class/net/$interface/bridge" ] || return 1
+  if [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-0}" != 1 ]; then
+    ! ip -details link show dev "$interface" 2>/dev/null | grep -Eq '(^|[[:space:]])veth([[:space:]]|$)' || return 1
+  fi
+}
 physical_default_route_exact() {
   ip -o -4 route show default | awk -v gateway="$PHYSICAL_WAN_GATEWAY" -v interface="$PHYSICAL_WAN_INTERFACE" '
     $1 == "default" { via=""; dev=""; for (i=1;i<=NF;i++) { if ($i=="via") via=$(i+1); if ($i=="dev") dev=$(i+1) } if (via==gateway && dev==interface) found=1 }
@@ -151,12 +163,14 @@ physical_interface_unmanaged() {
 physical_preflight() {
   local interface addresses desired
   require_physical_authorization
+  [ "$PHYSICAL_WAN_INTERFACE" != "$PHYSICAL_LAN_INTERFACE" ] ||
+    die "R14 requires two distinct configured deployment interfaces: WAN and LAN"
   for interface in "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_LAN_INTERFACE"; do
-    physical_interface_exists "$interface" || die "configured physical interface does not exist: $interface"
-    [ "$interface" != lo ] || die "loopback cannot be a physical router interface"
+    physical_interface_exists "$interface" || die "configured deployment interface does not exist: $interface; R14 requires explicit WAN and LAN interfaces"
+    physical_interface_is_deployment_eligible "$interface" ||
+      die "$interface is not an eligible pre-existing Ethernet deployment interface"
     physical_interface_unmanaged "$interface"
   done
-  [ "$PHYSICAL_WAN_INTERFACE" != "$PHYSICAL_LAN_INTERFACE" ] || die "physical WAN and LAN interfaces collide"
   physical_require_management_ack
   for interface in "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_LAN_INTERFACE"; do
     if [ "$interface" = "$PHYSICAL_WAN_INTERFACE" ]; then desired="$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH"; else desired="$ROUTER_LAN/${LAN_SUBNET#*/}"; fi

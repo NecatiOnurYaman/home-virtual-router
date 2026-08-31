@@ -29,4 +29,4 @@ done
 echo "CHECK: outer-host simulation interfaces absent ... PASS"
 [ ! -e "$temporary" ] || { echo "error: simulation temporary directory was not removed: $temporary" >&2; exit 1; }
 echo "CHECK: simulation temporary directory absent ... PASS"
-echo "R13 physical simulation acceptance passed; isolated resources are absent. This is not R14 hardware validation."
+echo "R13 host-interface simulation acceptance passed; isolated resources are absent. This is not R14 virtual-router deployment validation."

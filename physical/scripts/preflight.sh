@@ -6,7 +6,7 @@ source "$script_dir/physical-common.sh"
 require_root
 load_topology_config
 physical_preflight
-printf 'HVR physical deployment preflight\n'
+printf 'HVR host-interface deployment preflight (DEPLOYMENT_MODE=physical compatibility mode)\n'
 printf '  deployment mode:       %s\n' "$DEPLOYMENT_MODE"
 printf '  authorization marker:  %s\n' "$PHYSICAL_AUTHORIZATION_MARKER"
 printf '  WAN interface:         %s\n' "$PHYSICAL_WAN_INTERFACE"

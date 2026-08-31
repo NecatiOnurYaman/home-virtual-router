@@ -4,7 +4,9 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository includes **Stage R14: physical deployment validation infrastructure**. R13 maps the proven semantic WAN/LAN roles to explicitly configured dedicated Linux NICs; R14 adds an opt-in, phased real-NIC/real-client acceptance workflow. R14 implementation is complete, but actual hardware acceptance remains pending. Router management, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
+The repository includes **Stage R14: virtual-router deployment validation infrastructure**. R13 maps the proven semantic WAN/LAN roles to explicitly configured pre-existing host interfaces; R14 adds an opt-in, phased deployment-interface/external-client acceptance workflow. The intended target is an Ubuntu UTM VM with two externally supplied network interfaces, including VirtIO. R14 implementation is complete, but two-vNIC UTM acceptance remains pending. Router management, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
+
+The deployment roadmap is R12 runtime and deployment hardening, R13 host-interface deployment, R14 virtual-router deployment validation, R15 persistent background router operation, and R16 deployment polish/production hardening. The existing `DEPLOYMENT_MODE=physical`, `PHYSICAL_*`, `physical/*`, and `physical-hardware-*` names are compatibility terminology: “physical” means host-context operation against explicit pre-existing interfaces and does not require bare-metal NICs.
 
 Development happens inside a dedicated Ubuntu 26.04 LTS virtual machine running under UTM on macOS. The namespace lab stays inside that VM without changing macOS networking or the VM's normal UTM-facing interface and default route.
 
@@ -46,7 +48,7 @@ For the complete runtime, use `make runtime-start`, `runtime-status`, `runtime-c
 
 The tracked default remains `DEPLOYMENT_MODE=lab`. Physical mode is selected only by a complete, root-owned `/etc/home-virtual-router/router.env` based on `config/physical.example.env`, plus the separately created `/etc/home-virtual-router/allow-physical-deployment` authorization marker. Run `sudo make physical-check` before any physical start. Never first deploy over SSH on a configured WAN/LAN NIC unless losing that session is deliberate and the exact interface acknowledgement is set. See `docs/physical-deployment.md`.
 
-R14 real-hardware acceptance begins with `sudo make physical-hardware-check`, then uses explicit start, bounded NAT/firewall observation, evidence verification, and stop/restoration phases. It never guesses NICs, reboots, enables systemd, or reconfigures a network manager. Use a local console and a real wired LAN client; see `docs/physical-hardware-validation.md` before running any mutating target.
+R14 deployment acceptance begins with `sudo make physical-hardware-check`, then uses explicit start, bounded NAT/firewall observation, evidence verification, and stop/restoration phases. It never guesses interfaces, reboots, enables systemd, or reconfigures a network manager. Use a local console and an external downstream client outside the R2 topology; that client may be another VM, a host-connected virtual network participant, or a physical machine. See `docs/physical-hardware-validation.md` before running any mutating target.
 
 ## Observability integration
 

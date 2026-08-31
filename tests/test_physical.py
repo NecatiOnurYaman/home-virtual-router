@@ -62,13 +62,32 @@ class PhysicalConfigTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_config.validate(values)
 
+    def test_host_interface_mode_accepts_virtio_style_names_without_bus_metadata(self) -> None:
+        values = self.values()
+        values["PHYSICAL_WAN_INTERFACE"] = "enp0s1"
+        values["PHYSICAL_LAN_INTERFACE"] = "enp0s2"
+        values["IPFIX_CAPTURE_INTERFACE"] = "enp0s2"
+        validate_config.validate(values)
+
+    def test_host_interface_mode_rejects_one_interface_and_lab_names(self) -> None:
+        values = self.values()
+        values["PHYSICAL_LAN_INTERFACE"] = values["PHYSICAL_WAN_INTERFACE"]
+        values["IPFIX_CAPTURE_INTERFACE"] = values["PHYSICAL_WAN_INTERFACE"]
+        with self.assertRaisesRegex(ValueError, "two distinct configured deployment interfaces"):
+            validate_config.validate(values)
+        values = self.values()
+        values["PHYSICAL_LAN_INTERFACE"] = values["ROUTER_LAN_INTERFACE"]
+        values["IPFIX_CAPTURE_INTERFACE"] = values["ROUTER_LAN_INTERFACE"]
+        with self.assertRaisesRegex(ValueError, "must not reuse an HVR lab-owned interface"):
+            validate_config.validate(values)
+
 
 class PhysicalSafetyTests(unittest.TestCase):
     def run_function(self, definitions: str, function: str) -> subprocess.CompletedProcess[str]:
         command = f'source "{PHYSICAL_COMMON}"; {definitions}; {function}'
         return subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
 
-    def test_r14_hardware_commands_are_explicit_real_physical_only(self) -> None:
+    def test_r14_commands_are_explicit_host_interface_only(self) -> None:
         common = HARDWARE_COMMON.read_text(encoding="utf-8")
         check = HARDWARE_CHECK.read_text(encoding="utf-8")
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
@@ -82,6 +101,20 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertNotIn("r14_capture_inventory", check)
         self.assertIn("physical-hardware-check", makefile)
         self.assertNotIn("physical-hardware-test", makefile[makefile.index("check:"):makefile.index("test:")])
+
+    def test_deployment_eligibility_is_ethernet_and_driver_bus_independent(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        eligibility = common[
+            common.index("physical_interface_is_deployment_eligible()"):
+            common.index("physical_default_route_exact()")
+        ]
+        self.assertIn('/sys/class/net/$interface/type', eligibility)
+        self.assertIn('/sys/class/net/$interface/bridge', eligibility)
+        self.assertIn("veth", eligibility)
+        self.assertIn("HVR_INTERNAL_PHYSICAL_SIMULATION", eligibility)
+        self.assertNotIn("device/driver", eligibility)
+        self.assertNotIn("lspci", eligibility)
+        self.assertNotIn("lsusb", eligibility)
 
     def test_r14_never_guesses_interfaces_or_changes_persistence(self) -> None:
         scripts = "\n".join(path.read_text(encoding="utf-8") for path in (HARDWARE_COMMON, HARDWARE_CHECK, HARDWARE_TEST, HARDWARE_POST_REBOOT))
@@ -114,7 +147,7 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertIn("/var/lib/home-virtual-router/r14", common)
         self.assertNotIn("nft flush ruleset", common + hardware)
 
-    def test_r14_requires_real_client_and_external_ipfix_evidence(self) -> None:
+    def test_r14_requires_external_client_and_ipfix_evidence(self) -> None:
         hardware = HARDWARE_TEST.read_text(encoding="utf-8")
         documentation = HARDWARE_DOC.read_text(encoding="utf-8")
         for option in ("--client-mac", "--client-ip", "--target", "--ipfix-result"):
@@ -122,7 +155,10 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertIn("lease_matches", hardware)
         self.assertIn("dns_evidence_matches", hardware)
         self.assertIn("client_source_preserved", hardware)
-        self.assertIn("real wired client", documentation)
+        self.assertIn("external downstream client", documentation)
+        self.assertIn("UTM", documentation)
+        self.assertIn("virtio_net", documentation)
+        self.assertIn("does not require a PCI or USB device", documentation)
         self.assertIn("cannot pass R14", documentation)
 
     def test_management_default_requires_exact_interface_ack(self) -> None:
