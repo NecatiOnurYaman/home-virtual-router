@@ -44,17 +44,33 @@ require_physical_authorization() {
 physical_interface_exists() { ip link show dev "$1" >/dev/null 2>&1; }
 physical_interface_is_up() { ip -o link show dev "$1" | grep -q '<[^>]*UP[^>]*>'; }
 physical_address_exists() { ip -o -4 address show dev "$1" | awk '{print $4}' | grep -F -x -- "$2" >/dev/null; }
+physical_interface_is_ethernet() { [ "$(cat "/sys/class/net/$1/type" 2>/dev/null)" = 1 ]; }
+physical_interface_is_bridge() { [ -e "/sys/class/net/$1/bridge" ]; }
+physical_interface_is_veth() {
+  ip -details link show dev "$1" 2>/dev/null | grep -Eq '(^|[[:space:]])veth([[:space:]]|$)'
+}
+physical_private_simulation_interface_eligible() {
+  local interface="$1" current_netns current_mountns
+  [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-0}" = 1 ] && [ "$(id -u)" -eq 0 ] || return 1
+  [ -n "${HVR_INTERNAL_SIMULATION_CONFIG:-}" ] && [ "$HVR_CONFIG" = "$HVR_INTERNAL_SIMULATION_CONFIG" ] || return 1
+  [ -n "${HVR_INTERNAL_OUTER_NET_NAMESPACE:-}" ] && [ -n "${HVR_INTERNAL_OUTER_MOUNT_NAMESPACE:-}" ] || return 1
+  current_netns="$(readlink /proc/self/ns/net 2>/dev/null)" || return 1
+  current_mountns="$(readlink /proc/self/ns/mnt 2>/dev/null)" || return 1
+  [ "$current_netns" != "$HVR_INTERNAL_OUTER_NET_NAMESPACE" ] &&
+    [ "$current_mountns" != "$HVR_INTERNAL_OUTER_MOUNT_NAMESPACE" ] || return 1
+  [ "$PHYSICAL_WAN_INTERFACE" = hvr-sim-wan ] && [ "$PHYSICAL_LAN_INTERFACE" = hvr-sim-lan ] || return 1
+  case "$interface" in hvr-sim-wan|hvr-sim-lan) ;; *) return 1 ;; esac
+  physical_interface_exists "$interface" && physical_interface_is_veth "$interface"
+}
 physical_interface_is_deployment_eligible() {
   local interface="$1" lab_interface
-  [ "$interface" != lo ] && [ "$(cat "/sys/class/net/$interface/type" 2>/dev/null)" = 1 ] || return 1
-  for lab_interface in "$UPSTREAM_INTERFACE" "$ROUTER_WAN_INTERFACE" "$ROUTER_LAN_INTERFACE" \
+  physical_private_simulation_interface_eligible "$interface" && return 0
+  [ "$interface" != lo ] && physical_interface_is_ethernet "$interface" || return 1
+  for lab_interface in "$UPSTREAM_INTERFACE" "$LAB_ROUTER_WAN_INTERFACE" "$LAB_ROUTER_LAN_INTERFACE" \
     "$CLIENT_INTERFACE" "$TELEMETRY_HOST_INTERFACE" "$TELEMETRY_ROUTER_INTERFACE"; do
     [ "$interface" != "$lab_interface" ] || return 1
   done
-  [ ! -e "/sys/class/net/$interface/bridge" ] || return 1
-  if [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-0}" != 1 ]; then
-    ! ip -details link show dev "$interface" 2>/dev/null | grep -Eq '(^|[[:space:]])veth([[:space:]]|$)' || return 1
-  fi
+  ! physical_interface_is_bridge "$interface" && ! physical_interface_is_veth "$interface"
 }
 physical_default_route_exact() {
   ip -o -4 route show default | awk -v gateway="$PHYSICAL_WAN_GATEWAY" -v interface="$PHYSICAL_WAN_INTERFACE" '

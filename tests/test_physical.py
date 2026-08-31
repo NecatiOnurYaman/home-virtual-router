@@ -105,16 +105,67 @@ class PhysicalSafetyTests(unittest.TestCase):
     def test_deployment_eligibility_is_ethernet_and_driver_bus_independent(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
         eligibility = common[
-            common.index("physical_interface_is_deployment_eligible()"):
+            common.index("physical_interface_is_ethernet()"):
             common.index("physical_default_route_exact()")
         ]
-        self.assertIn('/sys/class/net/$interface/type', eligibility)
-        self.assertIn('/sys/class/net/$interface/bridge', eligibility)
-        self.assertIn("veth", eligibility)
-        self.assertIn("HVR_INTERNAL_PHYSICAL_SIMULATION", eligibility)
+        self.assertIn('/sys/class/net/$1/type', eligibility)
+        self.assertIn('/sys/class/net/$1/bridge', eligibility)
+        self.assertIn("physical_interface_is_veth", eligibility)
+        self.assertIn("physical_private_simulation_interface_eligible", eligibility)
         self.assertNotIn("device/driver", eligibility)
         self.assertNotIn("lspci", eligibility)
         self.assertNotIn("lsusb", eligibility)
+
+    def test_private_simulation_veth_exception_executes_and_fails_closed(self) -> None:
+        shared = f'''
+source "{PHYSICAL_COMMON}"
+PHYSICAL_WAN_INTERFACE=hvr-sim-wan
+PHYSICAL_LAN_INTERFACE=hvr-sim-lan
+UPSTREAM_INTERFACE=hvr-up
+ROUTER_WAN_INTERFACE=hvr-sim-wan
+ROUTER_LAN_INTERFACE=hvr-sim-lan
+LAB_ROUTER_WAN_INTERFACE=hvr-wan
+LAB_ROUTER_LAN_INTERFACE=hvr-lan
+CLIENT_INTERFACE=hvr-client
+TELEMETRY_HOST_INTERFACE=hvr-obs-host
+TELEMETRY_ROUTER_INTERFACE=hvr-observe
+physical_interface_exists() {{ return 0; }}
+physical_interface_is_ethernet() {{ return 0; }}
+physical_interface_is_bridge() {{ return 1; }}
+'''
+        production_veth = subprocess.run(
+            ["bash", "-c", shared + 'physical_interface_is_veth(){ return 0; }; HVR_INTERNAL_PHYSICAL_SIMULATION=0; physical_interface_is_deployment_eligible eth-test'],
+            check=False,
+        )
+        self.assertNotEqual(production_veth.returncode, 0)
+        production_virtio = subprocess.run(
+            ["bash", "-c", shared + 'physical_interface_is_veth(){ return 1; }; HVR_INTERNAL_PHYSICAL_SIMULATION=0; physical_interface_is_deployment_eligible enp0s2'],
+            check=False,
+        )
+        self.assertEqual(production_virtio.returncode, 0)
+
+        private = shared + '''
+physical_interface_is_ethernet() { return 1; }
+physical_interface_is_veth() { return 0; }
+id() { echo 0; }
+readlink() { case "$1" in /proc/self/ns/net) echo 'net:[2]' ;; /proc/self/ns/mnt) echo 'mnt:[2]' ;; *) return 1 ;; esac; }
+HVR_INTERNAL_PHYSICAL_SIMULATION=1
+HVR_INTERNAL_SIMULATION_CONFIG="$HVR_CONFIG"
+HVR_INTERNAL_OUTER_NET_NAMESPACE='net:[1]'
+HVR_INTERNAL_OUTER_MOUNT_NAMESPACE='mnt:[1]'
+'''
+        accepted = subprocess.run(
+            ["bash", "-c", private + 'physical_interface_is_deployment_eligible hvr-sim-wan'],
+            check=False,
+        )
+        self.assertEqual(accepted.returncode, 0)
+        for rejected_command in (
+            'physical_interface_is_deployment_eligible hvr-sim-other',
+            'HVR_INTERNAL_SIMULATION_CONFIG=/wrong/config; physical_interface_is_deployment_eligible hvr-sim-wan',
+            'unset HVR_INTERNAL_OUTER_NET_NAMESPACE; physical_interface_is_deployment_eligible hvr-sim-wan',
+        ):
+            rejected = subprocess.run(["bash", "-c", private + rejected_command], check=False)
+            self.assertNotEqual(rejected.returncode, 0)
 
     def test_r14_never_guesses_interfaces_or_changes_persistence(self) -> None:
         scripts = "\n".join(path.read_text(encoding="utf-8") for path in (HARDWARE_COMMON, HARDWARE_CHECK, HARDWARE_TEST, HARDWARE_POST_REBOOT))
@@ -601,11 +652,15 @@ false
         for generic in (
             ROOT / "lab/scripts/show-metrics.sh",
             ROOT / "lab/scripts/enable-metrics-export.sh",
-            ROOT / "physical/scripts/physical-common.sh",
         ):
             text = generic.read_text(encoding="utf-8")
             self.assertNotIn("mount -t sysfs", text)
             self.assertNotIn("hvr-sim", text)
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        self.assertNotIn("mount -t sysfs", common)
+        private_start = common.index("physical_private_simulation_interface_eligible()")
+        private_end = common.index("physical_interface_is_deployment_eligible()")
+        self.assertNotIn("hvr-sim", common[:private_start] + common[private_end:])
 
     def test_simulation_client_is_prepared_and_bounded_safely(self) -> None:
         inner = SIMULATION_INNER.read_text(encoding="utf-8")
