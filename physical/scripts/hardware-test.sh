@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_dir="$(cd "$script_dir/../.." && pwd)"
+r14_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+r14_repo_dir="$(cd "$r14_script_dir/../.." && pwd)"
 # shellcheck source=hardware-common.sh
-source "$script_dir/hardware-common.sh"
+source "$r14_script_dir/hardware-common.sh"
 
 usage() { echo "usage: $0 start | observe-nat --client-ip IP --target IP | observe-firewall --client-ip IP --upstream-peer IP | verify --client-mac MAC --client-ip IP --target IP --ipfix-result FILE | stop" >&2; exit 2; }
 argument() {
@@ -66,17 +66,17 @@ PY
 
 start_test() {
   [ ! -e "$R14_CHECKPOINT" ] || die "R14 checkpoint already exists; finish or recover the prior run"
-  "$script_dir/hardware-check.sh"
+  "$r14_script_dir/hardware-check.sh"
   [ ! -e "$RUNTIME_STATE_FILE" ] && r14_runtime_residue_absent || die "R14 core start requires an absent, residue-free HVR runtime"
   r14_prepare_report; : > "$R14_SUMMARY"; r14_capture_inventory "$R14_DIR/hardware-before.txt"; r14_write_checkpoint
   r14_result "Preflight" PASS
   printf 'R14 DEPLOYED ROUTER VALIDATION\nWAN: %s\nLAN: %s\nThis test will modify networking on these exact pre-existing interfaces.\n' "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_LAN_INTERFACE"
-  "$repo_dir/lab/scripts/runtime-start.sh"
-  r14_check "First start" "$repo_dir/lab/scripts/runtime-check.sh"
-  "$repo_dir/lab/scripts/show-metrics.sh" > "$R14_METRICS_BEFORE"
-  before="$(convergence_signature)"; "$repo_dir/lab/scripts/runtime-start.sh"
+  "$r14_repo_dir/lab/scripts/runtime-start.sh"
+  r14_check "First start" "$r14_repo_dir/lab/scripts/runtime-check.sh"
+  "$r14_repo_dir/lab/scripts/show-metrics.sh" > "$R14_METRICS_BEFORE"
+  before="$(convergence_signature)"; "$r14_repo_dir/lab/scripts/runtime-start.sh"
   r14_check "Repeated start" test "$before" = "$(convergence_signature)"
-  r14_check "Runtime status/check" "$repo_dir/lab/scripts/runtime-check.sh"
+  r14_check "Runtime status/check" "$r14_repo_dir/lab/scripts/runtime-check.sh"
   for label in "DHCP/DNS/routing client proof" "NAT observation" "Firewall upstream proof" "IPFIX decoded flow" "Metrics counter movement"; do r14_result "$label" "NOT RUN"; done
   echo "R14 start passed. Complete the documented client and controlled-upstream steps."
 }
@@ -119,14 +119,14 @@ verify_test() {
   target="$(argument --target "$@")" || usage; result="$(argument --ipfix-result "$@")" || usage
   valid_mac "$mac" && valid_ipv4 "$client" && valid_ipv4 "$target" || die "explicit client MAC/client IPv4/target IPv4 are required"
   [ -r "$R14_CHECKPOINT" ] && r14_checkpoint_identity_matches || die "R14 checkpoint/interface identity mismatch"
-  "$repo_dir/lab/scripts/runtime-check.sh"; "$repo_dir/lab/scripts/show-metrics.sh" > "$after"
+  "$r14_repo_dir/lab/scripts/runtime-check.sh"; "$r14_repo_dir/lab/scripts/show-metrics.sh" > "$after"
   r14_check "DHCP lease" lease_matches "$mac" "$client"
   r14_check "DNS through HVR" dns_evidence_matches "$client"
   r14_check "NAT translated source" grep -F "$PHYSICAL_WAN_ADDRESS > $target" "$R14_NAT_PROOF"
   r14_check "Firewall upstream block" grep -F -x 'WAN_PROBE_OBSERVED_LAN_PROBE_ABSENT' "$R14_FIREWALL_OK"
   r14_check "IPFIX decoded flow" ipfix_evidence_matches "$result" "$client" "$target"
   r14_check "Metrics counter movement" metrics_increased "$R14_METRICS_BEFORE" "$after" "$PHYSICAL_LAN_INTERFACE" "$PHYSICAL_WAN_INTERFACE"
-  r14_check "Runtime status/check" "$repo_dir/lab/scripts/runtime-check.sh"
+  r14_check "Runtime status/check" "$r14_repo_dir/lab/scripts/runtime-check.sh"
   for label in "Observability integration" "Hardware reboot validation" "Link-loss validation"; do r14_result "$label" "NOT RUN"; done
   echo "R14 core verification evidence passed; stop and restoration checks remain required."
 }
@@ -137,7 +137,7 @@ stop_test() {
   for label in "DHCP lease" "DNS through HVR" "NAT translated source" "Firewall upstream block" "IPFIX decoded flow" "Metrics counter movement" "Runtime status/check"; do
     r14_summary_latest_is_pass "$label" || core_evidence=0
   done
-  "$repo_dir/lab/scripts/runtime-stop.sh"
+  "$r14_repo_dir/lab/scripts/runtime-stop.sh"
   r14_check "Runtime stop" r14_runtime_residue_absent
   r14_check "Forwarding restoration" test "$(sysctl -n net.ipv4.ip_forward)" = "$(r14_checkpoint_field FORWARDING)"
   r14_check "Default-route restoration" cmp -s "$R14_DEFAULT_ROUTES_BEFORE" <(ip -o -4 route show default)

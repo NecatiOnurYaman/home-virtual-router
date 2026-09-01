@@ -102,6 +102,14 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertIn("physical-hardware-check", makefile)
         self.assertNotIn("physical-hardware-test", makefile[makefile.index("check:"):makefile.index("test:")])
 
+    def test_r14_hardware_test_uses_private_script_path_variables(self) -> None:
+        hardware_test = HARDWARE_TEST.read_text(encoding="utf-8")
+        self.assertIn('r14_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"', hardware_test)
+        self.assertIn('r14_repo_dir="$(cd "$r14_script_dir/../.." && pwd)"', hardware_test)
+        self.assertIn('source "$r14_script_dir/hardware-common.sh"', hardware_test)
+        self.assertNotIn('"$script_dir/', hardware_test)
+        self.assertNotIn('"$repo_dir/', hardware_test)
+
     def test_deployment_eligibility_is_ethernet_and_driver_bus_independent(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
         eligibility = common[

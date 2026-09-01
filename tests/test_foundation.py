@@ -182,8 +182,14 @@ class SafetyTests(unittest.TestCase):
 
 class TopologyAllowlistTests(unittest.TestCase):
     def run_common(self, command: str) -> subprocess.CompletedProcess[str]:
+        fixtures = (
+            "UPSTREAM_NAMESPACE=hvr-upstream; ROUTER_NAMESPACE=hvr-router; CLIENT_NAMESPACE=hvr-client; "
+            "UPSTREAM_INTERFACE=hvr-up; ROUTER_WAN_INTERFACE=hvr-wan; ROUTER_LAN_INTERFACE=hvr-lan; "
+            "CLIENT_INTERFACE=hvr-client; TELEMETRY_HOST_INTERFACE=hvr-observe-host; "
+            "TELEMETRY_ROUTER_INTERFACE=hvr-observe"
+        )
         return subprocess.run(
-            ["bash", "-c", f"source '{TOPOLOGY_COMMON}'; load_topology_config; {command}"],
+            ["bash", "-c", f"source '{TOPOLOGY_COMMON}'; {fixtures}; {command}"],
             text=True,
             capture_output=True,
         )
