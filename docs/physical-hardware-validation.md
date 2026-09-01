@@ -129,7 +129,7 @@ sudo make physical-check
 sudo make physical-hardware-check
 ```
 
-The R14 check refuses lab mode, the simulation override, invalid authorization, manager conflicts, unsafe management/default-route use, unsupported telemetry, stale/inconsistent runtime state, missing dependencies, or failed R13 preflight. It prints exact identities and does not mutate networking. The start phase records a bounded pre-start inventory under `/run/home-virtual-router/r14/` with timestamp, host/kernel, NIC name/ifindex/MAC/driver/link/carrier/MTU, addresses/routes, forwarding, and manager state.
+The R14 check refuses lab mode, the simulation override, invalid authorization, manager conflicts, unsafe management/default-route use, unsupported telemetry, stale/inconsistent runtime state, missing dependencies, an active generic Ubuntu `dnsmasq.service`, or any other failed R13 preflight. HVR's dnsmasq explicitly excludes loopback and does not need to own `127.0.0.1:53` or `[::1]:53`; `systemd-resolved` may remain active on its normal stub addresses. A separate host `dnsmasq.service` can still compete for the dedicated physical LAN DHCP/DNS sockets, so preflight tells the administrator to stop and disable it deliberately instead of changing that service automatically. The check prints exact identities and does not mutate networking. The start phase records a bounded pre-start inventory under `/run/home-virtual-router/r14/` with timestamp, host/kernel, NIC name/ifindex/MAC/driver/link/carrier/MTU, addresses/routes, forwarding, and manager state.
 
 ## Core acceptance
 

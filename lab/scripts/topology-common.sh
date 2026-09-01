@@ -597,6 +597,7 @@ render_dnsmasq_config() {
     printf '# Generated from %s and %s\n' "$DNSMASQ_CONFIG_TEMPLATE" "$HVR_CONFIG"
     printf 'port=0\n'
     printf 'interface=%s\n' "$ROUTER_LAN_INTERFACE"
+    printf 'except-interface=lo\n'
     printf 'bind-interfaces\n'
     printf 'dhcp-authoritative\n'
     printf 'dhcp-range=%s,%s,255.255.255.0,%s\n' "$DHCP_RANGE_START" "$DHCP_RANGE_END" "$DHCP_LEASE_TIME"
@@ -616,6 +617,7 @@ render_router_dns_config() {
     printf 'port=53\n'
     printf 'interface=%s\n' "$ROUTER_LAN_INTERFACE"
     printf 'listen-address=%s\n' "$ROUTER_LAN"
+    printf 'except-interface=lo\n'
     printf 'bind-interfaces\nno-resolv\nno-hosts\n'
     printf 'server=%s\n' "$DNS_UPSTREAM"
     printf 'cache-size=%s\n' "$DNS_CACHE_SIZE"

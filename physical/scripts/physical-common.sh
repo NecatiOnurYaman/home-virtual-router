@@ -176,9 +176,18 @@ physical_interface_unmanaged() {
   fi
 }
 
+physical_host_dnsmasq_service_absent() {
+  [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-0}" = 1 ] && return 0
+  if systemctl is-active --quiet dnsmasq.service; then
+    die "dnsmasq.service is active and conflicts with HVR's dedicated physical DHCP/DNS ownership; stop and disable that host service deliberately before physical deployment"
+    return 1
+  fi
+}
+
 physical_preflight() {
   local interface addresses desired
   require_physical_authorization
+  physical_host_dnsmasq_service_absent
   [ "$PHYSICAL_WAN_INTERFACE" != "$PHYSICAL_LAN_INTERFACE" ] ||
     die "R14 requires two distinct configured deployment interfaces: WAN and LAN"
   for interface in "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_LAN_INTERFACE"; do
@@ -272,6 +281,7 @@ physical_dnsmasq_process_healthy() {
 
 physical_dhcp_config_healthy() {
   grep -F -x "interface=$PHYSICAL_LAN_INTERFACE" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
+    grep -F -x 'except-interface=lo' "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
     grep -F -x 'bind-interfaces' "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
     grep -F -x 'dhcp-authoritative' "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
     grep -F -x "dhcp-range=$DHCP_RANGE_START,$DHCP_RANGE_END,255.255.255.0,$DHCP_LEASE_TIME" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&

@@ -325,6 +325,38 @@ HVR_INTERNAL_OUTER_MOUNT_NAMESPACE='mnt:[1]'
         self.assertIn(enable, common)
         self.assertLess(common.index("physical_prepare_dhcp_runtime; render_dnsmasq_config"), common.index("physical_start_dnsmasq; }"))
 
+    def test_generated_dhcp_and_dns_configs_explicitly_exclude_loopback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "dnsmasq.conf"
+            topology = TOPOLOGY_COMMON.read_text(encoding="utf-8")
+            renderers = topology[
+                topology.index("render_dnsmasq_config()"):topology.index("render_upstream_dns_config()")
+            ]
+            shared = renderers + f'''
+DNSMASQ_CONFIG="{config}"
+ROUTER_LAN_INTERFACE=hvr-lan
+ROUTER_LAN=10.0.0.1
+DHCP_RANGE_START=10.0.0.100
+DHCP_RANGE_END=10.0.0.199
+DHCP_LEASE_TIME=12h
+DHCP_DNS_SERVER=10.0.0.1
+DNSMASQ_CONFIG_TEMPLATE=template
+DNSMASQ_LEASE_FILE={directory}/leases
+DNSMASQ_PID_FILE={directory}/pid
+DNSMASQ_LOG_FILE={directory}/dhcp.log
+DNS_LOG_FILE={directory}/dns.log
+DNS_UPSTREAM=192.0.2.1
+DNS_CACHE_SIZE=1000
+'''
+            for renderer in ("render_dnsmasq_config", "render_router_dns_config"):
+                with self.subTest(renderer=renderer):
+                    subprocess.run(["bash", "-c", shared + renderer], check=True)
+                    lines = config.read_text(encoding="utf-8").splitlines()
+                    self.assertEqual(lines.count("except-interface=lo"), 1)
+                    self.assertIn("interface=hvr-lan", lines)
+                    self.assertIn("bind-interfaces", lines)
+            self.assertIn("listen-address=10.0.0.1", lines)
+
     def test_physical_dhcp_health_accepts_standalone_and_combined_dnsmasq(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
         config_health = common[
@@ -335,11 +367,87 @@ HVR_INTERNAL_OUTER_MOUNT_NAMESPACE='mnt:[1]'
         self.assertIn("grep -F -x 'port=53'", config_health)
         self.assertIn("grep -F -x 'port=0'", config_health)
         for shared_setting in (
-            "interface=$PHYSICAL_LAN_INTERFACE", "dhcp-authoritative", "dhcp-range=",
+            "interface=$PHYSICAL_LAN_INTERFACE", "except-interface=lo", "dhcp-authoritative", "dhcp-range=",
             "dhcp-option=option:router", "dhcp-option=option:dns-server",
             "dhcp-leasefile=$DNSMASQ_LEASE_FILE", "pid-file=$DNSMASQ_PID_FILE",
         ):
             self.assertIn(shared_setting, config_health)
+
+    def test_physical_dhcp_config_health_rejects_missing_loopback_exclusion(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        health_function = common[
+            common.index("physical_dhcp_config_healthy()"):common.index("physical_ipv4_dhcp_socket_inodes()")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "dnsmasq.conf"
+            enabled = Path(directory) / "dns-enabled"
+            required = [
+                "port=0", "interface=hvr-lan", "bind-interfaces", "dhcp-authoritative",
+                "dhcp-range=10.0.0.100,10.0.0.199,255.255.255.0,12h",
+                "dhcp-option=option:router,10.0.0.1",
+                "dhcp-option=option:dns-server,10.0.0.1",
+                f"dhcp-leasefile={directory}/leases", f"pid-file={directory}/pid",
+            ]
+            config.write_text("\n".join(required) + "\n", encoding="utf-8")
+            variables = f'''
+DNSMASQ_CONFIG="{config}"
+DNS_ENABLED_FILE="{enabled}"
+PHYSICAL_LAN_INTERFACE=hvr-lan
+DHCP_RANGE_START=10.0.0.100
+DHCP_RANGE_END=10.0.0.199
+DHCP_LEASE_TIME=12h
+ROUTER_LAN=10.0.0.1
+DHCP_DNS_SERVER=10.0.0.1
+DNSMASQ_LEASE_FILE={directory}/leases
+DNSMASQ_PID_FILE={directory}/pid
+'''
+            missing = subprocess.run(
+                ["bash", "-c", health_function + variables + "physical_dhcp_config_healthy"],
+                check=False,
+            )
+            self.assertNotEqual(missing.returncode, 0)
+            config.write_text("\n".join(required + ["except-interface=lo"]) + "\n", encoding="utf-8")
+            present = subprocess.run(
+                ["bash", "-c", health_function + variables + "physical_dhcp_config_healthy"],
+                check=False,
+            )
+            self.assertEqual(present.returncode, 0)
+
+    def test_physical_preflight_rejects_host_dnsmasq_but_simulation_bypasses_it(self) -> None:
+        common = f'''
+source "{PHYSICAL_COMMON}"
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+systemctl() {{
+  [ "$1" = is-active ] && [ "$2" = --quiet ] && [ "$3" = dnsmasq.service ] || return 99
+  return 0
+}}
+'''
+        production = subprocess.run(
+            ["bash", "-c", common + "HVR_INTERNAL_PHYSICAL_SIMULATION=0; physical_host_dnsmasq_service_absent"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(production.returncode, 0)
+        self.assertIn("dnsmasq.service is active", production.stderr)
+        self.assertIn("stop and disable", production.stderr)
+        simulation = subprocess.run(
+            ["bash", "-c", common + "HVR_INTERNAL_PHYSICAL_SIMULATION=1; physical_host_dnsmasq_service_absent"],
+            check=False,
+        )
+        self.assertEqual(simulation.returncode, 0)
+
+        preflight = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        guard_start = preflight.index("physical_host_dnsmasq_service_absent()")
+        guard_end = preflight.index("physical_preflight()")
+        guard = preflight[guard_start:guard_end]
+        self.assertIn("systemctl is-active --quiet dnsmasq.service", guard)
+        for mutation in ("systemctl stop", "systemctl disable", "pkill", "killall"):
+            self.assertNotIn(mutation, guard)
+        preflight_body = preflight[
+            preflight.index("physical_preflight()"):preflight.index("physical_write_map()")
+        ]
+        self.assertIn("physical_host_dnsmasq_service_absent", preflight_body)
 
     def test_physical_dhcp_health_is_server_owned_and_fails_closed(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
