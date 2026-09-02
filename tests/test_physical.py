@@ -235,7 +235,7 @@ HVR_INTERNAL_OUTER_MOUNT_NAMESPACE='mnt:[1]'
         definitions = (
             'PHYSICAL_WAN_INTERFACE=enp2s0; PHYSICAL_LAN_INTERFACE=enp3s0; '
             'PHYSICAL_MANAGEMENT_INTERFACE_ACK=none; physical_default_route_interface(){ echo enp2s0; }; '
-            'physical_management_ownership_present(){ return 0; }; '
+            'physical_default_route_ownership_present(){ return 0; }; '
             'physical_owned_management_route_verified(){ return 0; }'
         )
         result = self.run_function(definitions, "physical_require_management_ack")
@@ -245,12 +245,45 @@ HVR_INTERNAL_OUTER_MOUNT_NAMESPACE='mnt:[1]'
         definitions = (
             'PHYSICAL_WAN_INTERFACE=enp2s0; PHYSICAL_LAN_INTERFACE=enp3s0; '
             'PHYSICAL_MANAGEMENT_INTERFACE_ACK=none; physical_default_route_interface(){ echo enp2s0; }; '
-            'physical_management_ownership_present(){ return 0; }; '
+            'physical_default_route_ownership_present(){ return 0; }; '
             'physical_owned_management_route_verified(){ return 1; }'
         )
         result = self.run_function(definitions, "physical_require_management_ack")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("ownership mismatch", result.stderr)
+
+    def test_external_management_route_requires_ack_and_exact_active_topology(self) -> None:
+        base = (
+            'PHYSICAL_WAN_INTERFACE=enp2s0; PHYSICAL_LAN_INTERFACE=enp3s0; '
+            'physical_default_route_interface(){ echo enp2s0; }; '
+            'physical_default_route_ownership_present(){ return 1; }; '
+            'physical_active_topology_ownership_present(){ return 0; }; '
+        )
+        accepted = self.run_function(
+            base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=enp2s0; physical_active_topology_ownership_verified(){ return 0; }; physical_single_default_route_exact(){ return 0; }',
+            "physical_require_management_ack",
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+        for label, definitions in (
+            ("missing ACK", base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=none; physical_active_topology_ownership_verified(){ return 0; }; physical_single_default_route_exact(){ return 0; }'),
+            ("changed gateway", base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=enp2s0; physical_active_topology_ownership_verified(){ return 0; }; physical_single_default_route_exact(){ return 1; }'),
+            ("map drift", base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=enp2s0; physical_active_topology_ownership_verified(){ return 1; }; physical_single_default_route_exact(){ return 0; }'),
+            ("runtime mismatch", base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=enp2s0; physical_active_topology_ownership_verified(){ return 1; }; physical_single_default_route_exact(){ return 0; }'),
+            ("multiple routes", base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=enp2s0; physical_active_topology_ownership_verified(){ return 0; }; physical_single_default_route_exact(){ return 1; }'),
+        ):
+            with self.subTest(label=label):
+                rejected = self.run_function(definitions, "physical_require_management_ack")
+                self.assertNotEqual(rejected.returncode, 0)
+
+    def test_external_route_proof_never_creates_route_ownership(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        external = common[
+            common.index("physical_external_management_route_verified()"):
+            common.index("physical_require_management_ack()")
+        ]
+        self.assertNotIn("touch", external)
+        self.assertNotIn("PHYSICAL_DEFAULT_ROUTE_OWNED\" >", external)
 
     def test_management_ownership_proof_is_exact_and_live(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
@@ -261,7 +294,7 @@ HVR_INTERNAL_OUTER_MOUNT_NAMESPACE='mnt:[1]'
         for evidence in (
             "MAP_VERSION=2", "ROUTER_NETNS", "WAN_IFINDEX", "WAN_MAC", "LAN_IFINDEX", "LAN_MAC",
             "WAN_ADDRESS", "WAN_GATEWAY", "LAN_ADDRESS", "PHYSICAL_DEFAULT_ROUTE_OWNED",
-            "physical_single_owned_default_route_exact", "PHYSICAL_RUNTIME_STATE",
+            "physical_single_default_route_exact", "PHYSICAL_RUNTIME_STATE",
             "PHYSICAL_RUNTIME_CONFIG_SNAPSHOT", "--field deployment", "--field status",
             "--field owned", "topology", "routing", "cmp -s",
         ):

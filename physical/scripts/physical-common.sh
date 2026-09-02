@@ -102,7 +102,7 @@ physical_map_matches_live_config() {
   [ -r "$PHYSICAL_MAP_FILE" ] && cmp -s "$PHYSICAL_MAP_FILE" <(physical_render_map)
 }
 
-physical_single_owned_default_route_exact() {
+physical_single_default_route_exact() {
   ip -o -4 route show default | awk -v gateway="$PHYSICAL_WAN_GATEWAY" -v interface="$PHYSICAL_WAN_INTERFACE" '
     $1 == "default" {
       count++; via=""; dev=""
@@ -125,28 +125,54 @@ physical_runtime_owns_active_topology() {
   case ",$owned," in *,routing,*) ;; *) return 1 ;; esac
 }
 
-physical_management_ownership_present() {
-  [ -e "$PHYSICAL_MAP_FILE" ] || [ -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ]
+physical_default_route_ownership_present() {
+  [ -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] || [ -L "$PHYSICAL_DEFAULT_ROUTE_OWNED" ]
 }
 
-physical_owned_management_route_verified() {
-  [ -f "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] && [ -f "$PHYSICAL_MAP_FILE" ] &&
+physical_active_topology_ownership_present() {
+  [ -e "$PHYSICAL_MAP_FILE" ] || [ -L "$PHYSICAL_MAP_FILE" ] ||
+    [ -e "$PHYSICAL_RUNTIME_STATE" ] || [ -L "$PHYSICAL_RUNTIME_STATE" ] ||
+    [ -e "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT" ] || [ -L "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT" ]
+}
+
+physical_active_topology_ownership_verified() {
+  [ -f "$PHYSICAL_MAP_FILE" ] &&
     [ -f "$PHYSICAL_RUNTIME_STATE" ] && [ -f "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT" ] &&
-    [ "$(stat -c %u "$PHYSICAL_DEFAULT_ROUTE_OWNED")" = 0 ] &&
     [ "$(stat -c %u:%a "$PHYSICAL_MAP_FILE")" = 0:640 ] &&
     [ "$(stat -c %u:%a "$PHYSICAL_RUNTIME_STATE")" = 0:640 ] &&
     [ "$(stat -c %u:%a "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT")" = 0:640 ] &&
-    physical_map_matches_live_config &&
-    physical_runtime_owns_active_topology && physical_single_owned_default_route_exact
+    physical_map_matches_live_config && physical_runtime_owns_active_topology
+}
+
+physical_owned_management_route_verified() {
+  [ -f "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] && [ ! -L "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] &&
+    [ "$(stat -c %u "$PHYSICAL_DEFAULT_ROUTE_OWNED")" = 0 ] &&
+    physical_active_topology_ownership_verified && physical_single_default_route_exact
+}
+
+physical_external_management_route_verified() {
+  ! physical_default_route_ownership_present &&
+    physical_active_topology_ownership_verified && physical_single_default_route_exact
 }
 
 physical_require_management_ack() {
   local default_interface
   default_interface="$(physical_default_route_interface)"
   if [ "$default_interface" = "$PHYSICAL_WAN_INTERFACE" ] || [ "$default_interface" = "$PHYSICAL_LAN_INTERFACE" ]; then
-    if physical_management_ownership_present; then
+    if physical_default_route_ownership_present; then
       if ! physical_owned_management_route_verified; then
         die "physical runtime ownership mismatch for the configured default route; stop safely or restore the recorded configuration and interface identity"
+        return 1
+      fi
+      return 0
+    fi
+    if physical_active_topology_ownership_present; then
+      if ! physical_external_management_route_verified; then
+        die "physical runtime topology or external default-route identity is inconsistent; stop safely or restore the recorded configuration and interface identity"
+        return 1
+      fi
+      if [ "$PHYSICAL_MANAGEMENT_INTERFACE_ACK" != "$default_interface" ]; then
+        die "$default_interface carries the pre-existing external default route; acknowledge that exact interface with PHYSICAL_MANAGEMENT_INTERFACE_ACK=$default_interface"
         return 1
       fi
       return 0
