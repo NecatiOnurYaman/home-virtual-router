@@ -231,6 +231,88 @@ HVR_INTERNAL_OUTER_MOUNT_NAMESPACE='mnt:[1]'
         accepted = self.run_function(definitions.replace("ACK=none", "ACK=enp2s0"), "physical_require_management_ack")
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
+    def test_runtime_bootstrap_files_are_not_physical_topology_ownership(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        predicate = common[
+            common.index("physical_topology_ownership_present()"):
+            common.index("physical_active_topology_ownership_verified()")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime_state = root / "state.env"
+            runtime_snapshot = root / "config.snapshot"
+            runtime_state.write_text("STATUS=starting\nOWNED_STAGES=\n", encoding="ascii")
+            runtime_snapshot.write_text("DEPLOYMENT_MODE=physical\n", encoding="ascii")
+            paths = {
+                "PHYSICAL_RUNTIME_STATE": runtime_state,
+                "PHYSICAL_RUNTIME_CONFIG_SNAPSHOT": runtime_snapshot,
+                "PHYSICAL_MAP_FILE": root / "interface-map.env",
+                "PHYSICAL_DEFAULT_ROUTE_OWNED": root / "default-route-owned",
+                "PHYSICAL_WAN_ADDRESS_OWNED": root / "wan-address-owned",
+                "PHYSICAL_LAN_ADDRESS_OWNED": root / "lan-address-owned",
+                "PHYSICAL_WAN_LINK_OWNED": root / "wan-link-owned",
+                "PHYSICAL_LAN_LINK_OWNED": root / "lan-link-owned",
+                "PHYSICAL_FORWARDING_ORIGINAL": root / "forwarding-original",
+            }
+            definitions = predicate + "; ".join(f'{name}="{path}"' for name, path in paths.items())
+            bootstrap = subprocess.run(
+                ["bash", "-c", definitions + "; physical_topology_ownership_present"],
+                check=False,
+            )
+            self.assertNotEqual(bootstrap.returncode, 0)
+            self.assertEqual({path.name for path in root.iterdir()}, {"state.env", "config.snapshot"})
+
+            paths["PHYSICAL_MAP_FILE"].symlink_to(root / "missing-map-target")
+            broken_map = subprocess.run(
+                ["bash", "-c", definitions + "; physical_topology_ownership_present"],
+                check=False,
+            )
+            self.assertEqual(broken_map.returncode, 0)
+
+    def test_runtime_bootstrap_management_transition_still_requires_ack(self) -> None:
+        base = (
+            'PHYSICAL_WAN_INTERFACE=enp2s0; PHYSICAL_LAN_INTERFACE=enp3s0; '
+            'physical_default_route_interface(){ echo enp2s0; }; '
+            'physical_default_route_ownership_present(){ return 1; }; '
+            'physical_topology_ownership_present(){ return 1; }; '
+        )
+        accepted = self.run_function(
+            base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=enp2s0', "physical_require_management_ack"
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        rejected = self.run_function(
+            base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=none', "physical_require_management_ack"
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+
+    def test_runtime_bootstrap_wrong_default_route_is_still_rejected(self) -> None:
+        definitions = '''
+PHYSICAL_WAN_INTERFACE=enp2s0
+PHYSICAL_LAN_INTERFACE=enp3s0
+PHYSICAL_WAN_ADDRESS=192.0.2.2
+PHYSICAL_WAN_PREFIX_LENGTH=24
+PHYSICAL_WAN_GATEWAY=192.0.2.1
+ROUTER_LAN=10.0.0.1
+LAN_SUBNET=10.0.0.0/24
+require_physical_authorization(){ :; }
+physical_host_dnsmasq_service_absent(){ :; }
+physical_interface_exists(){ :; }
+physical_interface_is_deployment_eligible(){ :; }
+physical_interface_unmanaged(){ :; }
+physical_require_management_ack(){ :; }
+physical_default_route_exact(){ return 1; }
+ip(){
+  case "$*" in
+    "-o -4 route show default") echo "default via 192.0.2.254 dev enp2s0" ;;
+    "-o -4 address show dev "*) : ;;
+    *) return 1 ;;
+  esac
+}
+'''
+        rejected = self.run_function(definitions.strip(), "physical_preflight")
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("default route conflicts", rejected.stderr)
+
     def test_exact_owned_management_route_allows_convergence_without_ack(self) -> None:
         definitions = (
             'PHYSICAL_WAN_INTERFACE=enp2s0; PHYSICAL_LAN_INTERFACE=enp3s0; '
@@ -257,7 +339,7 @@ HVR_INTERNAL_OUTER_MOUNT_NAMESPACE='mnt:[1]'
             'PHYSICAL_WAN_INTERFACE=enp2s0; PHYSICAL_LAN_INTERFACE=enp3s0; '
             'physical_default_route_interface(){ echo enp2s0; }; '
             'physical_default_route_ownership_present(){ return 1; }; '
-            'physical_active_topology_ownership_present(){ return 0; }; '
+            'physical_topology_ownership_present(){ return 0; }; '
         )
         accepted = self.run_function(
             base + 'PHYSICAL_MANAGEMENT_INTERFACE_ACK=enp2s0; physical_active_topology_ownership_verified(){ return 0; }; physical_single_default_route_exact(){ return 0; }',

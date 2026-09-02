@@ -129,10 +129,15 @@ physical_default_route_ownership_present() {
   [ -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] || [ -L "$PHYSICAL_DEFAULT_ROUTE_OWNED" ]
 }
 
-physical_active_topology_ownership_present() {
-  [ -e "$PHYSICAL_MAP_FILE" ] || [ -L "$PHYSICAL_MAP_FILE" ] ||
-    [ -e "$PHYSICAL_RUNTIME_STATE" ] || [ -L "$PHYSICAL_RUNTIME_STATE" ] ||
-    [ -e "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT" ] || [ -L "$PHYSICAL_RUNTIME_CONFIG_SNAPSHOT" ]
+physical_topology_ownership_present() {
+  local marker
+  for marker in "$PHYSICAL_MAP_FILE" "$PHYSICAL_DEFAULT_ROUTE_OWNED" \
+    "$PHYSICAL_WAN_ADDRESS_OWNED" "$PHYSICAL_LAN_ADDRESS_OWNED" \
+    "$PHYSICAL_WAN_LINK_OWNED" "$PHYSICAL_LAN_LINK_OWNED" "$PHYSICAL_FORWARDING_ORIGINAL"; do
+    [ -e "$marker" ] || [ -L "$marker" ] || continue
+    return 0
+  done
+  return 1
 }
 
 physical_active_topology_ownership_verified() {
@@ -166,7 +171,7 @@ physical_require_management_ack() {
       fi
       return 0
     fi
-    if physical_active_topology_ownership_present; then
+    if physical_topology_ownership_present; then
       if ! physical_external_management_route_verified; then
         die "physical runtime topology or external default-route identity is inconsistent; stop safely or restore the recorded configuration and interface identity"
         return 1
