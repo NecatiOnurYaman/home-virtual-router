@@ -683,11 +683,17 @@ class DnsStageTests(unittest.TestCase):
             "udp UNCONN 0 0 10.0.0.1:53 0.0.0.0:*\n"
             "tcp LISTEN 0 32 10.0.0.1:53 0.0.0.0:*\n"
             "udp UNCONN 0 0 127.0.0.1:53 0.0.0.0:*\n"
+            "udp UNCONN 0 0 127.0.0.53:53 0.0.0.0:*\n"
+            "tcp LISTEN 0 32 127.0.0.54:53 0.0.0.0:*\n"
+            "udp UNCONN 0 0 127.23.45.67:53 0.0.0.0:*\n"
             "tcp LISTEN 0 32 [::1]:53 [::]:*\n"
             "udp UNCONN 0 0 [fe80::10%hvr-lan]:53 [::]:*\n"
             "tcp LISTEN 0 32 [fe80::10%hvr-lan]:53 [::]:*\n"
         )
         self.assertEqual(self.run_listener_policy(listeners).returncode, 0)
+
+        unrelated = "udp UNCONN 0 0 126.23.45.67:53 0.0.0.0:*\n"
+        self.assertNotEqual(self.run_listener_policy(listeners + unrelated).returncode, 0)
 
     def test_listener_policy_rejects_wan_and_wildcards(self) -> None:
         base = (

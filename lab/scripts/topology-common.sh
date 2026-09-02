@@ -687,7 +687,7 @@ validate_router_dns_listeners() {
 
       if (address == lan) {
         seen_lan[protocol] = 1
-      } else if (address == "127.0.0.1" || address == "::1") {
+      } else if (address ~ /^127\./ || address == "::1") {
         # Router-local loopback is allowed.
       } else if (address in lan_v6 && (scope == "" || scope == lan_if)) {
         # The exact link-local address assigned to hvr-lan is allowed.

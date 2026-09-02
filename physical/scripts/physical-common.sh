@@ -328,6 +328,36 @@ physical_dhcp_listener_healthy() {
   physical_socket_inodes_exactly_owned "$listener_inodes" "$process_inodes"
 }
 
+physical_ipv4_proc_address() {
+  awk -F. 'NF == 4 {printf "%02X%02X%02X%02X", $4, $3, $2, $1}' <<< "$1"
+}
+
+physical_dns_listener_table_healthy() {
+  local table="$1" required_state="$2" process_inodes="$3" lan_hex address inode owned_lan=0
+  lan_hex="$(physical_ipv4_proc_address "$ROUTER_LAN")" || return 1
+  [ -n "$lan_hex" ] || return 1
+  while read -r address inode; do
+    [ -n "$address" ] || continue
+    if printf '%s\n' "$process_inodes" | grep -F -x -- "$inode" >/dev/null; then
+      [ "$address" = "$lan_hex" ] || return 1
+      owned_lan=1
+    fi
+    if [ "$address" = "$lan_hex" ]; then
+      printf '%s\n' "$process_inodes" | grep -F -x -- "$inode" >/dev/null || return 1
+    fi
+  done < <(awk -v state="$required_state" '$2 ~ /:0035$/ && $4 == state {split($2, local, ":"); print local[1], $10}' "$table")
+  [ "$owned_lan" -eq 1 ]
+}
+
+physical_dns_listener_healthy() {
+  local udp_table="${1:-/proc/net/udp}" tcp_table="${2:-/proc/net/tcp}" proc_root="${3:-/proc}"
+  local pid process_inodes
+  pid="$(read_project_pid "$DNSMASQ_PID_FILE")" || return 1
+  process_inodes="$(physical_process_socket_inodes "$pid" "$proc_root")" || return 1
+  physical_dns_listener_table_healthy "$udp_table" 07 "$process_inodes" &&
+    physical_dns_listener_table_healthy "$tcp_table" 0A "$process_inodes"
+}
+
 physical_dhcp_lease_file_healthy() {
   [ -f "$DNSMASQ_LEASE_FILE" ] && [ "$(stat -c %u:%g:%a "$DNSMASQ_LEASE_FILE")" = "$DNSMASQ_UID:$DNSMASQ_GID:644" ]
 }
@@ -336,7 +366,10 @@ physical_dhcp_healthy() {
   resolve_dnsmasq_identity && physical_topology_healthy && physical_dnsmasq_process_healthy &&
     physical_dhcp_config_healthy && physical_dhcp_listener_healthy && physical_dhcp_lease_file_healthy
 }
-physical_dns_healthy() { physical_dhcp_healthy && [ -e "$DNS_ENABLED_FILE" ] && grep -F -x 'port=53' "$DNSMASQ_CONFIG" >/dev/null 2>&1; }
+physical_dns_healthy() {
+  physical_dhcp_healthy && [ -e "$DNS_ENABLED_FILE" ] &&
+    grep -F -x 'port=53' "$DNSMASQ_CONFIG" >/dev/null 2>&1 && physical_dns_listener_healthy
+}
 
 report_physical_dhcp_health() {
   local pid="<absent>" executable="<absent>" starttime="<absent>" process_netns="<absent>"

@@ -501,16 +501,72 @@ systemctl() {{
             rejected = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
             self.assertNotEqual(rejected.returncode, 0)
 
+    def test_physical_dns_listener_uses_exact_ipv4_socket_ownership(self) -> None:
+        def row(index: int, address: str, state: str, inode: int) -> str:
+            return (
+                f"{index}: {address}:0035 00000000:0000 {state} "
+                f"00000000:00000000 00:00000000 00000000 0 0 {inode} 2\n"
+            )
+
+        header = "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode\n"
+        lan = "0100000A"
+        loopback_53 = "3500007F"
+        loopback_54 = "3600007F"
+        wildcard = "00000000"
+        wan = "0440A8C0"
+        scenarios = (
+            ("exact LAN with foreign loopback", [row(1, lan, "07", 101), row(2, loopback_53, "07", 301)],
+             [row(1, lan, "0A", 102), row(2, loopback_54, "0A", 302)], (101, 102), True),
+            ("missing LAN UDP", [row(1, loopback_53, "07", 301)], [row(1, lan, "0A", 102)], (102,), False),
+            ("missing LAN TCP", [row(1, lan, "07", 101)], [row(1, loopback_54, "0A", 302)], (101,), False),
+            ("owned wildcard UDP", [row(1, lan, "07", 101), row(2, wildcard, "07", 103)],
+             [row(1, lan, "0A", 102)], (101, 102, 103), False),
+            ("owned wildcard TCP", [row(1, lan, "07", 101)],
+             [row(1, lan, "0A", 102), row(2, wildcard, "0A", 103)], (101, 102, 103), False),
+            ("owned WAN", [row(1, lan, "07", 101), row(2, wan, "07", 103)],
+             [row(1, lan, "0A", 102)], (101, 102, 103), False),
+            ("foreign LAN alongside HVR", [row(1, lan, "07", 101), row(2, lan, "07", 301)],
+             [row(1, lan, "0A", 102)], (101, 102), False),
+            ("foreign LAN instead of HVR", [row(1, lan, "07", 301)],
+             [row(1, lan, "0A", 302)], (), False),
+        )
+        for label, udp_rows, tcp_rows, owned, expected in scenarios:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                proc_root = Path(directory) / "proc"
+                descriptors = proc_root / "123" / "fd"
+                descriptors.mkdir(parents=True)
+                udp = Path(directory) / "udp"
+                tcp = Path(directory) / "tcp"
+                udp.write_text(header + "".join(udp_rows), encoding="ascii")
+                tcp.write_text(header + "".join(tcp_rows), encoding="ascii")
+                for descriptor, inode in enumerate(owned, 4):
+                    (descriptors / str(descriptor)).symlink_to(f"socket:[{inode}]")
+                command = (
+                    f'source "{PHYSICAL_COMMON}"; ROUTER_LAN=10.0.0.1; '
+                    'read_project_pid(){ echo 123; }; '
+                    f'physical_dns_listener_healthy "{udp}" "{tcp}" "{proc_root}"'
+                )
+                result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
+
     def test_listener_health_does_not_depend_on_ss_process_formatting(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
         listener = common[
             common.index("physical_dhcp_listener_healthy()"):
-            common.index("physical_dhcp_lease_file_healthy()")
+            common.index("physical_ipv4_proc_address()")
         ]
         self.assertIn("/proc/net/udp", common)
         self.assertNotIn("ss ", listener)
         self.assertNotIn("udp6", listener)
         self.assertIn(":0043", common)
+        dns_listener = common[
+            common.index("physical_ipv4_proc_address()"):
+            common.index("physical_dhcp_lease_file_healthy()")
+        ]
+        self.assertNotIn("ss -", dns_listener)
+        self.assertIn("/proc/net/udp", dns_listener)
+        self.assertIn("/proc/net/tcp", dns_listener)
+        self.assertIn(":0035", dns_listener)
 
     def test_physical_dhcp_conflict_reports_predicate_diagnostics(self) -> None:
         runtime = (ROOT / "lab/scripts/runtime-common.sh").read_text(encoding="utf-8")
