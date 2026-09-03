@@ -23,7 +23,14 @@ rollback_enable() {
         physical_start_dnsmasq || true
         ;;
       dhcp) stop_project_process_if_present "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG" || true; remove_project_dhcp_files ;;
-      firewall) filter_table_exists && delete_project_filter_table || true ;;
+      firewall)
+        if ! physical_host_forward_rules_absent; then
+          physical_delete_host_forward_rule "$PHYSICAL_HOST_FORWARD_WAN_LAN_COMMENT" || true
+          physical_delete_host_forward_rule "$PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT" || true
+        fi
+        rm -f -- "$PHYSICAL_HOST_FORWARD_OWNED"
+        filter_table_exists && delete_project_filter_table || true
+        ;;
       nat) nat_table_exists && delete_project_nat_table || true ;;
       routing) [ ! -e "$PHYSICAL_FORWARDING_ORIGINAL" ] || physical_routing_disable || true ;;
       topology) [ ! -e "$PHYSICAL_MAP_FILE" ] || physical_topology_disable || true ;;
@@ -40,9 +47,9 @@ case "$stage:$action" in
   routing:disable) physical_routing_disable ;;
   nat:enable) physical_routing_healthy || die "physical forwarding is not enabled"; nat_table_exists && die "project NAT table already exists"; create_project_nat_table; nat_rule_exists || die "physical NAT rule is incomplete" ;;
   nat:disable) nat_rule_exists || die "physical NAT ownership is inconsistent"; delete_project_nat_table ;;
-  firewall:enable) nat_rule_exists || die "physical NAT must be healthy"; filter_table_exists && die "project firewall table already exists"; create_project_filter_table; filter_rules_exist || die "physical firewall is incomplete" ;;
-  firewall:disable) filter_rules_exist || die "physical firewall ownership is inconsistent"; delete_project_filter_table ;;
-  dhcp:enable) filter_rules_exist || die "physical firewall must be healthy"; physical_dhcp_enable ;;
+  firewall:enable) nat_rule_exists || die "physical NAT must be healthy"; filter_table_exists && die "project firewall table already exists"; physical_firewall_enable ;;
+  firewall:disable) physical_firewall_disable ;;
+  dhcp:enable) physical_firewall_healthy || die "physical firewall must be healthy"; physical_dhcp_enable ;;
   dhcp:disable) physical_dhcp_disable ;;
   dns:enable) physical_dns_enable ;;
   dns:disable) physical_dns_disable ;;

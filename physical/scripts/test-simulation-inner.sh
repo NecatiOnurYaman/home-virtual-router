@@ -340,7 +340,8 @@ physical_runtime_absent() {
     [ ! -e "$PHYSICAL_WAN_LINK_OWNED" ] &&
     [ ! -e "$PHYSICAL_LAN_LINK_OWNED" ] &&
     [ ! -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] &&
-    [ ! -e "$PHYSICAL_FORWARDING_ORIGINAL" ]
+    [ ! -e "$PHYSICAL_FORWARDING_ORIGINAL" ] &&
+    [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ]
 }
 cleanup() {
   set +e

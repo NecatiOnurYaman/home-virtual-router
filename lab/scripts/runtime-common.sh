@@ -138,7 +138,7 @@ runtime_stage_state() {
       ! nat_table_exists && upstream_return_route_exists && return 1
       return 2 ;;
     firewall)
-      if [ "$DEPLOYMENT_MODE" = "physical" ]; then filter_rules_exist && return 0; ! filter_table_exists && return 1; return 2; fi
+      if [ "$DEPLOYMENT_MODE" = "physical" ]; then physical_firewall_healthy && return 0; ! filter_table_exists && physical_host_forward_rules_absent && return 1; return 2; fi
       namespace_exists "$ROUTER_NAMESPACE" || return 1
       filter_rules_exist && return 0
       ! filter_table_exists && return 1

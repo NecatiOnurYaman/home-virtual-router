@@ -1008,6 +1008,87 @@ false
         self.assertIn('oifname "$ROUTER_WAN_INTERFACE" ip saddr "$LAN_SUBNET"', topology)
         self.assertIn('iifname "$ROUTER_LAN_INTERFACE" oifname "$ROUTER_WAN_INTERFACE"', topology)
 
+    def test_host_forward_conflict_detection_is_explicit_and_fail_closed(self) -> None:
+        common = '''
+filter_rules_exist(){ return 1; }
+nft(){
+  case "$*" in
+    "list ruleset") printf '%s\n' "$RULESET" ;;
+    "list table ip filter") [ "$DOCKER" = 1 ] ;;
+    "list chain ip filter DOCKER-USER") [ "$DOCKER" = 1 ] ;;
+    "list chain ip filter FORWARD") [ "$DOCKER" = 1 ] && printf '%s\n' 'type filter hook forward priority filter; policy drop;' 'jump DOCKER-USER' ;;
+    *) return 1 ;;
+  esac
+}
+'''
+        no_conflict = self.run_function(common + 'DOCKER=0; RULESET=""', "physical_host_forward_conflict_mode")
+        self.assertEqual(no_conflict.returncode, 0)
+        self.assertEqual(no_conflict.stdout.strip(), "none")
+        docker = self.run_function(
+            common + 'DOCKER=1; RULESET="type filter hook forward priority filter; policy drop;"',
+            "physical_host_forward_conflict_mode",
+        )
+        self.assertEqual(docker.stdout.strip(), "docker-user")
+        unsupported = self.run_function(
+            common + 'DOCKER=0; RULESET="type filter hook forward priority filter; policy drop;"',
+            "physical_host_forward_conflict_mode",
+        )
+        self.assertEqual(unsupported.stdout.strip(), "unsupported")
+
+    def test_host_forward_compatibility_rules_are_exact_owned_and_idempotent(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        start = common.index("physical_docker_forward_shape_present()")
+        end = common.index("physical_dnsmasq_process_healthy()")
+        compatibility = common[start:end]
+        for marker in ("hvr-r5-host-forward-lan-wan", "hvr-r5-host-forward-wan-lan"):
+            self.assertIn(marker, common)
+        self.assertIn('nft insert rule ip filter DOCKER-USER ct state new,established,related', compatibility)
+        self.assertIn('ip saddr "$LAN_SUBNET"', compatibility)
+        self.assertIn('nft insert rule ip filter DOCKER-USER ct state established,related', compatibility)
+        self.assertIn('ip daddr "$LAN_SUBNET"', compatibility)
+        wan_start = compatibility.index("if ! nft insert rule")
+        wan_rule = compatibility[wan_start:compatibility.index("; then", wan_start)]
+        self.assertNotIn("state new", wan_rule)
+        self.assertIn("physical_host_forward_rules_absent || die", compatibility)
+        self.assertIn("grep -c .", compatibility)
+        self.assertIn('nft delete rule ip filter DOCKER-USER handle "$handle"', compatibility)
+        for forbidden in ("flush ruleset", "flush chain", "iptables -F", "policy accept", "delete chain ip filter DOCKER-USER"):
+            self.assertNotIn(forbidden, compatibility)
+
+    def test_host_forward_health_requires_both_exact_rules_and_ignores_foreign_rule(self) -> None:
+        base = '''
+PHYSICAL_LAN_INTERFACE=enp0s2
+PHYSICAL_WAN_INTERFACE=enp0s1
+LAN_SUBNET=10.0.0.0/24
+physical_host_forward_rules_output(){ printf '%s\n' "$RULES"; }
+'''
+        lan = 'ct state established,related,new iifname "enp0s2" oifname "enp0s1" ip saddr 10.0.0.0/24 counter packets 0 bytes 0 accept comment "hvr-r5-host-forward-lan-wan" # handle 10'
+        wan = 'ct state established,related iifname "enp0s1" oifname "enp0s2" ip daddr 10.0.0.0/24 counter packets 0 bytes 0 accept comment "hvr-r5-host-forward-wan-lan" # handle 11'
+        foreign = 'ip saddr 198.51.100.0/24 accept comment "foreign-rule" # handle 99'
+        complete = self.run_function(base + f'RULES=$\'{lan}\\n{wan}\\n{foreign}\'', "physical_host_forward_rules_healthy")
+        self.assertEqual(complete.returncode, 0, complete.stderr)
+        for label, rules in (("missing return", lan), ("partial duplicate", lan + "\n" + lan + "\n" + wan)):
+            with self.subTest(label=label):
+                result = self.run_function(base + f'RULES=$\'{rules}\\n\'', "physical_host_forward_rules_healthy")
+                self.assertNotEqual(result.returncode, 0)
+
+        stage = (ROOT / "physical/scripts/physical-stage.sh").read_text(encoding="utf-8")
+        runtime = (ROOT / "lab/scripts/runtime-common.sh").read_text(encoding="utf-8")
+        self.assertIn("physical_firewall_enable", stage)
+        self.assertIn("physical_firewall_disable", stage)
+        self.assertIn("physical_firewall_healthy", runtime)
+
+        delete_definitions = base + f'''
+RULES=$'{lan}\\n{foreign}'
+nft() {{ printf '%s\\n' "$*"; }}
+'''
+        deleted = self.run_function(
+            delete_definitions.strip(), 'physical_delete_host_forward_rule "$PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT"'
+        )
+        self.assertEqual(deleted.returncode, 0, deleted.stderr)
+        self.assertEqual(deleted.stdout.strip(), "delete rule ip filter DOCKER-USER handle 10")
+        self.assertNotIn("handle 99", deleted.stdout)
+
     def test_forwarding_address_route_and_link_changes_are_ownership_marked(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
         for marker in (

@@ -21,6 +21,9 @@ readonly PHYSICAL_DEFAULT_ROUTE_OWNED="$PHYSICAL_RUNTIME_DIR/default-route-owned
 readonly PHYSICAL_FORWARDING_ORIGINAL="$PHYSICAL_RUNTIME_DIR/forwarding-original"
 readonly PHYSICAL_RUNTIME_STATE="/run/home-virtual-router/runtime/state.env"
 readonly PHYSICAL_RUNTIME_CONFIG_SNAPSHOT="/run/home-virtual-router/runtime/config.snapshot"
+readonly PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT="hvr-r5-host-forward-lan-wan"
+readonly PHYSICAL_HOST_FORWARD_WAN_LAN_COMMENT="hvr-r5-host-forward-wan-lan"
+readonly PHYSICAL_HOST_FORWARD_OWNED="$PHYSICAL_RUNTIME_DIR/host-forward-compat-owned"
 
 require_physical_authorization() {
   require_linux || return 1
@@ -301,6 +304,125 @@ physical_routing_disable() {
   case "$original" in 0|1) ;; *) die "physical forwarding snapshot is malformed" ;; esac
   [ "$(sysctl -n net.ipv4.ip_forward)" = "$original" ] || sysctl -q -w net.ipv4.ip_forward="$original"
   rm -f -- "$PHYSICAL_FORWARDING_ORIGINAL"
+}
+
+physical_docker_forward_shape_present() {
+  local forward
+  nft list table ip filter >/dev/null 2>&1 && nft list chain ip filter DOCKER-USER >/dev/null 2>&1 || return 1
+  forward="$(nft list chain ip filter FORWARD 2>/dev/null)" || return 1
+  printf '%s\n' "$forward" | grep -F 'type filter hook forward priority filter; policy drop;' >/dev/null &&
+    printf '%s\n' "$forward" | grep -F 'jump DOCKER-USER' >/dev/null
+}
+
+physical_host_forward_conflict_mode() {
+  local hooks hvr=0 foreign
+  hooks="$(nft list ruleset 2>/dev/null | grep -Ec 'hook forward')" || hooks=0
+  filter_rules_exist && hvr=1
+  [ "$hooks" -ge "$hvr" ] || { printf 'unsupported\n'; return; }
+  foreign=$((hooks - hvr))
+  if [ "$foreign" -eq 0 ]; then printf 'none\n'
+  elif [ "$foreign" -eq 1 ] && physical_docker_forward_shape_present; then printf 'docker-user\n'
+  else printf 'unsupported\n'
+  fi
+}
+
+physical_host_forward_rules_output() {
+  nft -a list chain ip filter DOCKER-USER 2>/dev/null
+}
+
+physical_host_forward_rules_healthy() {
+  local rules lan wan
+  rules="$(physical_host_forward_rules_output)" || return 1
+  lan="$(printf '%s\n' "$rules" | grep -F "comment \"$PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT\"")"
+  wan="$(printf '%s\n' "$rules" | grep -F "comment \"$PHYSICAL_HOST_FORWARD_WAN_LAN_COMMENT\"")"
+  [ "$(printf '%s\n' "$lan" | grep -c .)" -eq 1 ] &&
+    printf '%s\n' "$lan" | grep -F 'ct state established,related,new' | grep -F "iifname \"$PHYSICAL_LAN_INTERFACE\"" | grep -F "oifname \"$PHYSICAL_WAN_INTERFACE\"" | grep -F "ip saddr $LAN_SUBNET" | grep -F 'accept' >/dev/null &&
+    [ "$(printf '%s\n' "$wan" | grep -c .)" -eq 1 ] &&
+    printf '%s\n' "$wan" | grep -F 'ct state established,related' | grep -vF ',new' | grep -F "iifname \"$PHYSICAL_WAN_INTERFACE\"" | grep -F "oifname \"$PHYSICAL_LAN_INTERFACE\"" | grep -F "ip daddr $LAN_SUBNET" | grep -F 'accept' >/dev/null
+}
+
+physical_host_forward_rules_absent() {
+  local rules
+  rules="$(physical_host_forward_rules_output 2>/dev/null)" || return 0
+  ! printf '%s\n' "$rules" | grep -F -e "$PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT" -e "$PHYSICAL_HOST_FORWARD_WAN_LAN_COMMENT" >/dev/null
+}
+
+physical_host_forward_ownership_healthy() {
+  [ -f "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ ! -L "$PHYSICAL_HOST_FORWARD_OWNED" ] &&
+    [ "$(stat -c %u:%a "$PHYSICAL_HOST_FORWARD_OWNED")" = 0:600 ]
+}
+
+physical_delete_host_forward_rule() {
+  local comment="$1" rules line handle
+  rules="$(physical_host_forward_rules_output)" || return 1
+  line="$(printf '%s\n' "$rules" | grep -F "comment \"$comment\"")"
+  [ "$(printf '%s\n' "$line" | grep -c .)" -eq 1 ] || return 1
+  handle="$(printf '%s\n' "$line" | awk '{for (i=1;i<=NF;i++) if ($i=="handle") print $(i+1)}')"
+  case "$handle" in *[!0-9]*|'') return 1 ;; esac
+  nft delete rule ip filter DOCKER-USER handle "$handle"
+}
+
+physical_enable_host_forward_rules() {
+  [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ ! -L "$PHYSICAL_HOST_FORWARD_OWNED" ] &&
+    physical_host_forward_rules_absent || die "stale or partial HVR DOCKER-USER compatibility state exists"
+  nft insert rule ip filter DOCKER-USER ct state new,established,related \
+    iifname "$PHYSICAL_LAN_INTERFACE" oifname "$PHYSICAL_WAN_INTERFACE" ip saddr "$LAN_SUBNET" \
+    counter accept comment "$PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT"
+  if ! nft insert rule ip filter DOCKER-USER ct state established,related \
+    iifname "$PHYSICAL_WAN_INTERFACE" oifname "$PHYSICAL_LAN_INTERFACE" ip daddr "$LAN_SUBNET" \
+    counter accept comment "$PHYSICAL_HOST_FORWARD_WAN_LAN_COMMENT"; then
+    physical_delete_host_forward_rule "$PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT" || true
+    return 1
+  fi
+  physical_host_forward_rules_healthy || die "HVR DOCKER-USER compatibility rules are incomplete"
+  install -o 0 -g 0 -m 0600 /dev/null "$PHYSICAL_HOST_FORWARD_OWNED"
+}
+
+physical_disable_host_forward_rules() {
+  physical_host_forward_ownership_healthy && physical_host_forward_rules_healthy ||
+    die "HVR DOCKER-USER compatibility ownership is inconsistent"
+  physical_delete_host_forward_rule "$PHYSICAL_HOST_FORWARD_WAN_LAN_COMMENT"
+  physical_delete_host_forward_rule "$PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT"
+  rm -f -- "$PHYSICAL_HOST_FORWARD_OWNED"
+  physical_host_forward_rules_absent || die "HVR DOCKER-USER compatibility rules remain after teardown"
+}
+
+physical_firewall_healthy() {
+  local mode
+  filter_rules_exist || return 1
+  mode="$(physical_host_forward_conflict_mode)"
+  case "$mode" in
+    none) [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ ! -L "$PHYSICAL_HOST_FORWARD_OWNED" ] && physical_host_forward_rules_absent ;;
+    docker-user) physical_host_forward_ownership_healthy && physical_host_forward_rules_healthy ;;
+    *) return 1 ;;
+  esac
+}
+
+physical_firewall_enable() {
+  local mode
+  mode="$(physical_host_forward_conflict_mode)"
+  case "$mode" in
+    none) physical_host_forward_rules_absent || die "unexpected HVR host-forward compatibility state" ;;
+    docker-user) physical_enable_host_forward_rules ;;
+    *) die "unsupported host forwarding firewall can independently drop HVR traffic" ;;
+  esac
+  if ! create_project_filter_table || ! physical_firewall_healthy; then
+    if ! physical_host_forward_rules_absent; then
+      physical_delete_host_forward_rule "$PHYSICAL_HOST_FORWARD_WAN_LAN_COMMENT" || true
+      physical_delete_host_forward_rule "$PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT" || true
+      rm -f -- "$PHYSICAL_HOST_FORWARD_OWNED"
+    fi
+    filter_table_exists && delete_project_filter_table || true
+    die "physical firewall is incomplete"
+  fi
+}
+
+physical_firewall_disable() {
+  local mode
+  physical_firewall_healthy || die "physical firewall ownership is inconsistent"
+  mode="$(physical_host_forward_conflict_mode)"
+  [ "$mode" != docker-user ] || physical_disable_host_forward_rules
+  delete_project_filter_table
 }
 
 physical_dnsmasq_process_healthy() {

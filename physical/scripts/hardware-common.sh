@@ -113,6 +113,7 @@ r14_runtime_residue_absent() {
     [ ! -e "$PHYSICAL_WAN_ADDRESS_OWNED" ] && [ ! -e "$PHYSICAL_LAN_ADDRESS_OWNED" ] &&
     [ ! -e "$PHYSICAL_WAN_LINK_OWNED" ] && [ ! -e "$PHYSICAL_LAN_LINK_OWNED" ] &&
     [ ! -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] && [ ! -e "$PHYSICAL_FORWARDING_ORIGINAL" ] &&
+    [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ] &&
     [ ! -e "$DNSMASQ_PID_FILE" ] && [ ! -e "$DNS_ENABLED_FILE" ] &&
     [ ! -e "$IPFIX_PID_FILE" ] && [ ! -e "$IPFIX_PLUGIN_PID_FILE" ] &&
     [ ! -e "$IPFIX_CORE_STARTTIME_FILE" ] && [ ! -e "$IPFIX_PLUGIN_STARTTIME_FILE" ] &&
