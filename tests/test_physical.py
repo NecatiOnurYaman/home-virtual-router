@@ -1010,7 +1010,8 @@ false
 
     def test_host_forward_conflict_detection_is_explicit_and_fail_closed(self) -> None:
         common = '''
-filter_rules_exist(){ return 1; }
+FILTER_TABLE=hvr-filter
+FILTER_CHAIN=hvr-forward
 nft(){
   case "$*" in
     "list ruleset") printf '%s\n' "$RULESET" ;;
@@ -1021,19 +1022,46 @@ nft(){
   esac
 }
 '''
-        no_conflict = self.run_function(common + 'DOCKER=0; RULESET=""', "physical_host_forward_conflict_mode")
-        self.assertEqual(no_conflict.returncode, 0)
-        self.assertEqual(no_conflict.stdout.strip(), "none")
-        docker = self.run_function(
-            common + 'DOCKER=1; RULESET="type filter hook forward priority filter; policy drop;"',
-            "physical_host_forward_conflict_mode",
+        ip_docker = '''table ip filter {
+ chain FORWARD {
+  type filter hook forward priority filter; policy drop;
+ }
+}'''
+        ip6_docker = '''table ip6 filter {
+ chain FORWARD {
+  type filter hook forward priority filter; policy accept;
+ }
+}'''
+        hvr = '''table inet hvr-filter {
+ chain hvr-forward {
+  type filter hook forward priority filter; policy drop;
+ }
+}'''
+        foreign_inet = '''table inet foreign-filter {
+ chain forward-input {
+  type filter hook forward priority 10; policy accept;
+ }
+}'''
+        foreign_ip = '''table ip foreign-filter {
+ chain forward-input {
+  type filter hook forward priority 20; policy accept;
+ }
+}'''
+        scenarios = (
+            ("no hooks", "", 0, "none"),
+            ("IPv4 Docker", ip_docker, 1, "docker-user"),
+            ("IPv4 and IPv6 Docker", ip_docker + "\n" + ip6_docker, 1, "docker-user"),
+            ("IPv6 only", ip6_docker, 0, "none"),
+            ("foreign inet", foreign_inet, 0, "unsupported"),
+            ("additional foreign ip", ip_docker + "\n" + foreign_ip, 1, "unsupported"),
+            ("HVR only", hvr, 0, "none"),
         )
-        self.assertEqual(docker.stdout.strip(), "docker-user")
-        unsupported = self.run_function(
-            common + 'DOCKER=0; RULESET="type filter hook forward priority filter; policy drop;"',
-            "physical_host_forward_conflict_mode",
-        )
-        self.assertEqual(unsupported.stdout.strip(), "unsupported")
+        for label, ruleset, docker, expected in scenarios:
+            with self.subTest(label=label):
+                definitions = common + f'DOCKER={docker}; RULESET=$\'{ruleset}\''
+                result = self.run_function(definitions, "physical_host_forward_conflict_mode")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
 
     def test_host_forward_compatibility_rules_are_exact_owned_and_idempotent(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")

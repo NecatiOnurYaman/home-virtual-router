@@ -314,12 +314,23 @@ physical_docker_forward_shape_present() {
     printf '%s\n' "$forward" | grep -F 'jump DOCKER-USER' >/dev/null
 }
 
+physical_relevant_foreign_forward_hook_count() {
+  local rules
+  rules="$(nft list ruleset 2>/dev/null)" || return 1
+  printf '%s\n' "$rules" | awk -v hvr_table="$FILTER_TABLE" -v hvr_chain="$FILTER_CHAIN" '
+    $1 == "table" { family=$2; table_name=$3; chain_name=""; next }
+    $1 == "chain" { chain_name=$2; next }
+    index($0, "hook forward") && (family == "ip" || family == "inet") {
+      if (!(family == "inet" && table_name == hvr_table && chain_name == hvr_chain)) count++
+    }
+    END { print count + 0 }
+  '
+}
+
 physical_host_forward_conflict_mode() {
-  local hooks hvr=0 foreign
-  hooks="$(nft list ruleset 2>/dev/null | grep -Ec 'hook forward')" || hooks=0
-  filter_rules_exist && hvr=1
-  [ "$hooks" -ge "$hvr" ] || { printf 'unsupported\n'; return; }
-  foreign=$((hooks - hvr))
+  local foreign
+  foreign="$(physical_relevant_foreign_forward_hook_count)" || { printf 'unsupported\n'; return; }
+  case "$foreign" in *[!0-9]*|'') printf 'unsupported\n'; return ;; esac
   if [ "$foreign" -eq 0 ]; then printf 'none\n'
   elif [ "$foreign" -eq 1 ] && physical_docker_forward_shape_present; then printf 'docker-user\n'
   else printf 'unsupported\n'
