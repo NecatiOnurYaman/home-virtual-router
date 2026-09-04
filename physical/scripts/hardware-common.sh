@@ -14,7 +14,7 @@ readonly R14_METRICS_BEFORE="$R14_DIR/metrics-before.json"
 readonly R14_NAT_PROOF="$R14_DIR/nat-proof.txt"
 readonly R14_FIREWALL_PROOF="$R14_DIR/firewall-proof.txt"
 readonly R14_FIREWALL_OK="$R14_DIR/firewall-proof.ok"
-readonly R14_VERSION=1
+readonly R14_VERSION=2
 
 r14_require_real_hardware() {
   require_linux
@@ -75,12 +75,16 @@ r14_write_checkpoint() {
   local wan_up=0 lan_up=0 wan_address=0 lan_address=0 default_route=0
   physical_interface_is_up "$PHYSICAL_WAN_INTERFACE" && wan_up=1
   physical_interface_is_up "$PHYSICAL_LAN_INTERFACE" && lan_up=1
-  physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH" && wan_address=1
+  if [ "$(physical_wan_mode)" = static ]; then
+    physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$(physical_effective_wan_cidr)" && wan_address=1
+  else
+    ! ip -o -4 address show dev "$PHYSICAL_WAN_INTERFACE" scope global | grep -q . || wan_address=1
+  fi
   physical_address_exists "$PHYSICAL_LAN_INTERFACE" "$ROUTER_LAN/${LAN_SUBNET#*/}" && lan_address=1
   physical_default_route_exact && default_route=1
   install -d -o 0 -g 0 -m 0700 "$R14_PERSIST_DIR"
   {
-    printf 'R14_VERSION=%s\nDEPLOYMENT_MODE=physical\n' "$R14_VERSION"
+    printf 'R14_VERSION=%s\nDEPLOYMENT_MODE=physical\nWAN_MODE=%s\n' "$R14_VERSION" "$(physical_wan_mode)"
     printf 'WAN_INTERFACE=%s\nWAN_IFINDEX=%s\nWAN_MAC=%s\n' "$PHYSICAL_WAN_INTERFACE" \
       "$(cat "/sys/class/net/$PHYSICAL_WAN_INTERFACE/ifindex")" "$(cat "/sys/class/net/$PHYSICAL_WAN_INTERFACE/address")"
     printf 'LAN_INTERFACE=%s\nLAN_IFINDEX=%s\nLAN_MAC=%s\n' "$PHYSICAL_LAN_INTERFACE" \
@@ -100,6 +104,7 @@ r14_checkpoint_identity_matches() {
   [ "$(stat -c %u:%a "$R14_CHECKPOINT")" = 0:600 ] &&
     [ "$(r14_checkpoint_field R14_VERSION)" = "$R14_VERSION" ] &&
     [ "$(r14_checkpoint_field DEPLOYMENT_MODE)" = physical ] &&
+    [ "$(r14_checkpoint_field WAN_MODE)" = "$(physical_wan_mode)" ] &&
     [ "$(r14_checkpoint_field WAN_INTERFACE)" = "$PHYSICAL_WAN_INTERFACE" ] &&
     [ "$(r14_checkpoint_field LAN_INTERFACE)" = "$PHYSICAL_LAN_INTERFACE" ] &&
     [ "$(r14_checkpoint_field WAN_IFINDEX)" = "$(cat "/sys/class/net/$PHYSICAL_WAN_INTERFACE/ifindex")" ] &&
@@ -114,6 +119,7 @@ r14_runtime_residue_absent() {
     [ ! -e "$PHYSICAL_WAN_LINK_OWNED" ] && [ ! -e "$PHYSICAL_LAN_LINK_OWNED" ] &&
     [ ! -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] && [ ! -e "$PHYSICAL_FORWARDING_ORIGINAL" ] &&
     [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ] &&
+    [ ! -e "$PHYSICAL_WAN_DHCP_DIR" ] &&
     [ ! -e "$DNSMASQ_PID_FILE" ] && [ ! -e "$DNS_ENABLED_FILE" ] &&
     [ ! -e "$IPFIX_PID_FILE" ] && [ ! -e "$IPFIX_PLUGIN_PID_FILE" ] &&
     [ ! -e "$IPFIX_CORE_STARTTIME_FILE" ] && [ ! -e "$IPFIX_PLUGIN_STARTTIME_FILE" ] &&

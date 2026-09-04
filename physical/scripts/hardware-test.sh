@@ -27,6 +27,11 @@ convergence_signature() {
     "$IPFIX_PLUGIN_STARTTIME_FILE" "$METRICS_EXPORT_PID_FILE" "$METRICS_EXPORT_STARTTIME_FILE"; do
     printf '%s=' "$file"; cat "$file"
   done
+  if [ "$(physical_wan_mode)" = dhcp ]; then
+    for file in "$PHYSICAL_WAN_DHCLIENT_PID_FILE" "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE" "$PHYSICAL_WAN_DHCP_STATE"; do
+      printf '%s=' "$file"; cat "$file"
+    done
+  fi
 }
 
 lease_matches() {
@@ -82,14 +87,15 @@ start_test() {
 }
 
 observe_nat() {
-  local client target
+  local client target wan_address
   client="$(argument --client-ip "$@")" || usage; target="$(argument --target "$@")" || usage
   valid_ipv4 "$client" && valid_ipv4 "$target" || die "client and target must be explicit IPv4 addresses"
   [ -r "$R14_CHECKPOINT" ] && r14_checkpoint_identity_matches || die "R14 checkpoint/interface identity mismatch"
+  wan_address="$(physical_effective_wan_address)" || die "current effective WAN address is unavailable"
   rm -f -- "$R14_NAT_PROOF"
-  echo "Waiting 20 seconds for translated ICMP $PHYSICAL_WAN_ADDRESS -> $target; generate it from $client now."
-  timeout 20 tcpdump -U -n -i "$PHYSICAL_WAN_INTERFACE" -c 1 "icmp and src host $PHYSICAL_WAN_ADDRESS and dst host $target" > "$R14_NAT_PROOF" 2>&1
-  grep -F "$PHYSICAL_WAN_ADDRESS > $target" "$R14_NAT_PROOF" >/dev/null
+  echo "Waiting 20 seconds for translated ICMP $wan_address -> $target; generate it from $client now."
+  timeout 20 tcpdump -U -n -i "$PHYSICAL_WAN_INTERFACE" -c 1 "icmp and src host $wan_address and dst host $target" > "$R14_NAT_PROOF" 2>&1
+  grep -F "$wan_address > $target" "$R14_NAT_PROOF" >/dev/null
   r14_result "NAT observation" PASS
 }
 
@@ -114,15 +120,16 @@ observe_firewall() {
 }
 
 verify_test() {
-  local mac client target result after="$R14_DIR/metrics-after.json"
+  local mac client target result wan_address after="$R14_DIR/metrics-after.json"
   mac="$(argument --client-mac "$@")" || usage; client="$(argument --client-ip "$@")" || usage
   target="$(argument --target "$@")" || usage; result="$(argument --ipfix-result "$@")" || usage
   valid_mac "$mac" && valid_ipv4 "$client" && valid_ipv4 "$target" || die "explicit client MAC/client IPv4/target IPv4 are required"
   [ -r "$R14_CHECKPOINT" ] && r14_checkpoint_identity_matches || die "R14 checkpoint/interface identity mismatch"
+  wan_address="$(physical_effective_wan_address)" || die "current effective WAN address is unavailable"
   "$r14_repo_dir/lab/scripts/runtime-check.sh"; "$r14_repo_dir/lab/scripts/show-metrics.sh" > "$after"
   r14_check "DHCP lease" lease_matches "$mac" "$client"
   r14_check "DNS through HVR" dns_evidence_matches "$client"
-  r14_check "NAT translated source" grep -F "$PHYSICAL_WAN_ADDRESS > $target" "$R14_NAT_PROOF"
+  r14_check "NAT translated source" grep -F "$wan_address > $target" "$R14_NAT_PROOF"
   r14_check "Firewall upstream block" grep -F -x 'WAN_PROBE_OBSERVED_LAN_PROBE_ABSENT' "$R14_FIREWALL_OK"
   r14_check "IPFIX decoded flow" ipfix_evidence_matches "$result" "$client" "$target"
   r14_check "Metrics counter movement" metrics_increased "$R14_METRICS_BEFORE" "$after" "$PHYSICAL_LAN_INTERFACE" "$PHYSICAL_WAN_INTERFACE"
@@ -141,7 +148,9 @@ stop_test() {
   r14_check "Runtime stop" r14_runtime_residue_absent
   r14_check "Forwarding restoration" test "$(sysctl -n net.ipv4.ip_forward)" = "$(r14_checkpoint_field FORWARDING)"
   r14_check "Default-route restoration" cmp -s "$R14_DEFAULT_ROUTES_BEFORE" <(ip -o -4 route show default)
-  expected="$(r14_checkpoint_field WAN_ADDRESS_PRESENT)"; actual=0; physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH" && actual=1
+  expected="$(r14_checkpoint_field WAN_ADDRESS_PRESENT)"; actual=0
+  if [ "$(physical_wan_mode)" = static ]; then physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$(physical_effective_wan_cidr)" && actual=1
+  else ! ip -o -4 address show dev "$PHYSICAL_WAN_INTERFACE" scope global | grep -q . || actual=1; fi
   r14_check "WAN address restoration" test "$actual" = "$expected"
   expected="$(r14_checkpoint_field LAN_ADDRESS_PRESENT)"; actual=0; physical_address_exists "$PHYSICAL_LAN_INTERFACE" "$ROUTER_LAN/${LAN_SUBNET#*/}" && actual=1
   r14_check "LAN address restoration" test "$actual" = "$expected"

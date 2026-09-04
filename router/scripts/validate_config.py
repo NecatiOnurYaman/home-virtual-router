@@ -10,8 +10,7 @@ from pathlib import Path
 
 REQUIRED = {
     "DEPLOYMENT_MODE", "PHYSICAL_WAN_INTERFACE", "PHYSICAL_LAN_INTERFACE",
-    "PHYSICAL_TELEMETRY_INTERFACE", "PHYSICAL_WAN_ADDRESS",
-    "PHYSICAL_WAN_PREFIX_LENGTH", "PHYSICAL_WAN_GATEWAY",
+    "PHYSICAL_TELEMETRY_INTERFACE",
     "PHYSICAL_MANAGEMENT_INTERFACE_ACK",
     "UPSTREAM_SUBNET", "UPSTREAM_GATEWAY", "ROUTER_WAN", "LAN_SUBNET", "ROUTER_LAN",
     "CLIENT_ADDRESS", "UPSTREAM_NAMESPACE", "ROUTER_NAMESPACE", "CLIENT_NAMESPACE",
@@ -58,6 +57,15 @@ def validate(values: dict[str, str]) -> None:
     deployment = values["DEPLOYMENT_MODE"]
     if deployment not in {"lab", "physical"}:
         raise ValueError("DEPLOYMENT_MODE must be lab or physical")
+    wan_mode = values.get("PHYSICAL_WAN_MODE", "static")
+    if wan_mode not in {"static", "dhcp"}:
+        raise ValueError("PHYSICAL_WAN_MODE must be static or dhcp")
+    if deployment == "lab" and wan_mode != "static":
+        raise ValueError("PHYSICAL_WAN_MODE=dhcp is only supported for physical deployment")
+    if deployment == "lab":
+        missing = [key for key in ("PHYSICAL_WAN_ADDRESS", "PHYSICAL_WAN_PREFIX_LENGTH", "PHYSICAL_WAN_GATEWAY") if key not in values]
+        if missing:
+            raise ValueError(f"missing required keys: {', '.join(missing)}")
     upstream = ipaddress.ip_network(values["UPSTREAM_SUBNET"], strict=True)
     lan = ipaddress.ip_network(values["LAN_SUBNET"], strict=True)
     if lan.prefixlen != 24:
@@ -190,18 +198,27 @@ def validate(values: dict[str, str]) -> None:
             raise ValueError("R13 physical telemetry interface deployment is deferred; use none")
         if values["PHYSICAL_MANAGEMENT_INTERFACE_ACK"] not in {"none", wan, lan_if}:
             raise ValueError("PHYSICAL_MANAGEMENT_INTERFACE_ACK must be none or the exact WAN/LAN interface")
-        try:
-            prefix = int(values["PHYSICAL_WAN_PREFIX_LENGTH"])
-        except ValueError as error:
-            raise ValueError("PHYSICAL_WAN_PREFIX_LENGTH must be an integer") from error
-        if not 1 <= prefix <= 32:
-            raise ValueError("PHYSICAL_WAN_PREFIX_LENGTH must be between 1 and 32")
-        wan_network = ipaddress.ip_network(f"{values['PHYSICAL_WAN_ADDRESS']}/{prefix}", strict=False)
-        gateway = ipaddress.ip_address(values["PHYSICAL_WAN_GATEWAY"])
-        if gateway not in wan_network or gateway == ipaddress.ip_address(values["PHYSICAL_WAN_ADDRESS"]):
-            raise ValueError("PHYSICAL_WAN_GATEWAY must be a different address in the static WAN subnet")
-        if wan_network.overlaps(lan):
-            raise ValueError("physical WAN network must not overlap LAN_SUBNET")
+        static_keys = ("PHYSICAL_WAN_ADDRESS", "PHYSICAL_WAN_PREFIX_LENGTH", "PHYSICAL_WAN_GATEWAY")
+        if wan_mode == "dhcp":
+            contradictory = [key for key in static_keys if key in values]
+            if contradictory:
+                raise ValueError(f"PHYSICAL_WAN_MODE=dhcp must omit static WAN keys: {', '.join(contradictory)}")
+        else:
+            missing = [key for key in static_keys if key not in values]
+            if missing:
+                raise ValueError(f"static physical WAN configuration is missing: {', '.join(missing)}")
+            try:
+                prefix = int(values["PHYSICAL_WAN_PREFIX_LENGTH"])
+            except ValueError as error:
+                raise ValueError("PHYSICAL_WAN_PREFIX_LENGTH must be an integer") from error
+            if not 1 <= prefix <= 32:
+                raise ValueError("PHYSICAL_WAN_PREFIX_LENGTH must be between 1 and 32")
+            wan_network = ipaddress.ip_network(f"{values['PHYSICAL_WAN_ADDRESS']}/{prefix}", strict=False)
+            gateway = ipaddress.ip_address(values["PHYSICAL_WAN_GATEWAY"])
+            if gateway not in wan_network or gateway == ipaddress.ip_address(values["PHYSICAL_WAN_ADDRESS"]):
+                raise ValueError("PHYSICAL_WAN_GATEWAY must be a different address in the static WAN subnet")
+            if wan_network.overlaps(lan):
+                raise ValueError("physical WAN network must not overlap LAN_SUBNET")
 
 
 def main() -> int:

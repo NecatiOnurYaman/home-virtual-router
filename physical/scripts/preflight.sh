@@ -11,8 +11,13 @@ printf '  deployment mode:       %s\n' "$DEPLOYMENT_MODE"
 printf '  authorization marker:  %s\n' "$PHYSICAL_AUTHORIZATION_MARKER"
 printf '  WAN interface:         %s\n' "$PHYSICAL_WAN_INTERFACE"
 ip -brief -4 address show dev "$PHYSICAL_WAN_INTERFACE" | sed 's/^/    /'
-printf '  WAN static address:    %s/%s\n' "$PHYSICAL_WAN_ADDRESS" "$PHYSICAL_WAN_PREFIX_LENGTH"
-printf '  WAN gateway:           %s\n' "$PHYSICAL_WAN_GATEWAY"
+printf '  WAN mode:              %s\n' "$(physical_wan_mode)"
+if [ "$(physical_wan_mode)" = static ]; then
+  printf '  WAN static address:    %s\n' "$(physical_effective_wan_cidr)"
+  printf '  WAN gateway:           %s\n' "$(physical_effective_wan_gateway)"
+else
+  printf '  WAN lease:             acquired only during runtime start\n'
+fi
 printf '  LAN interface:         %s\n' "$PHYSICAL_LAN_INTERFACE"
 ip -brief -4 address show dev "$PHYSICAL_LAN_INTERFACE" | sed 's/^/    /'
 printf '  LAN address:           %s/%s\n' "$ROUTER_LAN" "${LAN_SUBNET#*/}"

@@ -1,6 +1,6 @@
 # R14 virtual-router deployment validation
 
-R14 validates the accepted R13 runtime on an Ubuntu router host with two explicitly configured, pre-existing Ethernet deployment interfaces: a static-IPv4 WAN connected to an upstream network and a LAN connected to an external downstream client. `DEPLOYMENT_MODE=physical` is the legacy compatibility name for this host-interface mode; it does not require bare-metal NICs. UTM/QEMU VirtIO, other VM Ethernet interfaces, and conventional PCI/USB Ethernet are valid when they satisfy the same Linux interface and ownership checks. R14 never guesses an interface.
+R14 validates the accepted physical runtime on an Ubuntu router host with two explicitly configured, pre-existing Ethernet deployment interfaces: a static or ordinary IPv4-DHCP WAN connected to an upstream CPE/network and a LAN connected to an external downstream client. `DEPLOYMENT_MODE=physical` is the legacy compatibility name for this host-interface mode; it does not require bare-metal NICs. UTM/QEMU VirtIO, other VM Ethernet interfaces, and conventional PCI/USB Ethernet are valid when they satisfy the same Linux interface and ownership checks. R14 never guesses an interface.
 
 R14 has two levels. Core acceptance requires deployment-interface preflight, start, external-client DHCP/DNS/routing, observed NAT, controlled unsolicited-WAN blocking, decoded IPFIX, metrics movement, repeated start, runtime health, stop, restoration, and residue checks. Extended acceptance separately covers optional HNOP delivery, post-reboot inspection, link loss, and safe configuration drift. Persistent background operation belongs to R15. `NOT RUN` is not `PASS`.
 
@@ -41,7 +41,8 @@ sudo install -o root -g root -m 0640 /dev/null /etc/home-virtual-router/allow-ph
 
 - `DEPLOYMENT_MODE=physical`
 - `PHYSICAL_WAN_INTERFACE` and `PHYSICAL_LAN_INTERFACE`
-- `PHYSICAL_WAN_ADDRESS`, `PHYSICAL_WAN_PREFIX_LENGTH`, and `PHYSICAL_WAN_GATEWAY`
+- `PHYSICAL_WAN_MODE=static|dhcp` (omission means `static`)
+- in static mode only: `PHYSICAL_WAN_ADDRESS`, `PHYSICAL_WAN_PREFIX_LENGTH`, and `PHYSICAL_WAN_GATEWAY`; omit all three in DHCP mode
 - `LAN_SUBNET` and `ROUTER_LAN`
 - `DHCP_RANGE_START`, `DHCP_RANGE_END`, `DHCP_DNS_SERVER`, and `DHCP_LEASE_TIME`
 - `DNS_UPSTREAM` and the existing deterministic DNS test values
@@ -85,7 +86,7 @@ sudo make physical-hardware-test-observe-nat \
   R14_UPSTREAM_TARGET="$R14_UPSTREAM_TARGET"
 ```
 
-Do not continue until it observes the configured HVR WAN source. Next configure the controlled upstream peer's narrow route to the HVR LAN through HVR's WAN address. Run the firewall observation and, while it waits, send the documented ICMP probe from that peer toward the client:
+Do not continue until it observes the current effective HVR WAN source. With DHCP this is the HVR-owned lease shown by `sudo make runtime-status`, not the ISP/public address after the upstream CPE performs its second NAT. Next configure the controlled upstream peer's narrow route to the HVR LAN through the current HVR WAN address. Run the firewall observation and, while it waits, send the documented ICMP probe from that peer toward the client:
 
 ```sh
 sudo make physical-hardware-test-observe-firewall \
@@ -119,7 +120,7 @@ The project never invokes `reboot` or changes systemd persistence. After the pos
 
 ## Preparation and safety
 
-Use a local console for the first run. SSH through either configured interface can be lost. Prepare a complete root-owned `/etc/home-virtual-router/router.env` from `config/physical.example.env`; replace every documentation address and set exact `PHYSICAL_WAN_INTERFACE`, `PHYSICAL_LAN_INTERFACE`, static WAN/gateway, LAN/DHCP, DNS, IPFIX collector, and metrics receiver values. Keep the two deployment interfaces unmanaged using the distro's normal per-interface configuration. Do not disable NetworkManager or systemd-networkd globally.
+Use a local console for the first run. SSH through either configured interface can be lost. Prepare a complete root-owned `/etc/home-virtual-router/router.env` from `config/physical.example.env`; replace every documentation value and set exact `PHYSICAL_WAN_INTERFACE`, `PHYSICAL_LAN_INTERFACE`, WAN mode, LAN/DHCP, DNS, IPFIX collector, and metrics receiver values. Static mode requires its WAN address/prefix/gateway. DHCP mode omits those three keys and requires an ordinary upstream IPv4 DHCP server. Keep the two deployment interfaces unmanaged using the distro's normal per-interface configuration. Do not disable NetworkManager or systemd-networkd globally.
 
 Create the existing deliberate authorization marker and run the read-only checks:
 
@@ -162,7 +163,7 @@ sudo make physical-hardware-test-observe-nat \
   R14_CLIENT_IP=<LEASED_CLIENT_IP> R14_UPSTREAM_TARGET=<CONTROLLED_TARGET_IP>
 ```
 
-This accepts only a WAN packet whose source is the configured HVR WAN address and destination is the chosen target; client success alone is not NAT proof.
+This accepts only a WAN packet whose source is HVR's current validated effective WAN address and destination is the chosen target; client success alone is not NAT proof. Double NAT at the upstream CPE is expected, and R14 neither observes nor requires the eventual ISP/public source.
 
 For firewall proof, configure a route on a controlled upstream peer toward the HVR LAN subnet via HVR's WAN address. Start the bounded dual-interface observation, then send ICMP from that peer to the client:
 

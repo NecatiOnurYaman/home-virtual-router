@@ -1,6 +1,6 @@
 # R13 host-interface deployment
 
-R13 implements conservative static-IPv4 host-interface deployment. The existing `DEPLOYMENT_MODE=physical`, `PHYSICAL_*`, and `physical/*` names are compatibility terminology: “physical” means HVR operates in the Linux host context against explicitly configured pre-existing interfaces. Those interfaces may be UTM/QEMU VirtIO or other VM NICs, TAP-backed guest interfaces, PCI/USB Ethernet, or other normal Linux Ethernet interfaces; bare-metal hardware is not required. Lab mode remains inside `hvr-router`.
+Physical deployment supports conservative static IPv4 and first-class upstream IPv4 DHCP. The existing `DEPLOYMENT_MODE=physical`, `PHYSICAL_*`, and `physical/*` names are compatibility terminology: “physical” means HVR operates in the Linux host context against explicitly configured pre-existing interfaces. Those interfaces may be UTM/QEMU VirtIO or other VM NICs, TAP-backed guest interfaces, PCI/USB Ethernet, or other normal Linux Ethernet interfaces; bare-metal hardware is not required. Lab mode remains inside `hvr-router`.
 
 ## Configuration and authorization
 
@@ -15,7 +15,7 @@ sudo install -o root -g root -m 0640 config/physical.example.env /etc/home-virtu
 sudo editor /etc/home-virtual-router/router.env
 ```
 
-Set exact WAN/LAN kernel names, static WAN address/prefix/gateway, LAN values, DNS upstream, IPFIX collector, and metrics receiver. No interface is guessed. WAN and LAN must be distinct eligible Ethernet deployment interfaces; loopback, HVR lab interfaces, veths outside the R13 simulation, Linux bridges, missing interfaces, collisions, unsupported modes, and conflicting addresses/routes fail closed. Driver or PCI/USB backing is not allowlisted. Replace all documentation addresses before deployment use.
+Set exact WAN/LAN kernel names, WAN mode (plus address/prefix/gateway only for static mode), LAN values, DNS upstream, IPFIX collector, and metrics receiver. No interface is guessed. WAN and LAN must be distinct eligible Ethernet deployment interfaces; loopback, HVR lab interfaces, veths outside the R13 simulation, Linux bridges, missing interfaces, collisions, unsupported modes, and conflicting addresses/routes fail closed. Driver or PCI/USB backing is not allowlisted. Replace all documentation addresses before deployment use.
 
 Physical mutation also requires a fixed marker which the software never creates:
 
@@ -28,19 +28,19 @@ Both files must be root-owned and not group/world writable. Environment variable
 
 ## Management and network-manager safety
 
-Prefer a local appliance console for first deployment. A separate management NIC is recommended, but it must use specific management routes rather than a competing default route because the static WAN owns the router default path. Never first deploy over SSH through WAN or LAN unless disconnect is expected.
+Prefer a local appliance console for first deployment. A separate management NIC is recommended, but it must use specific management routes rather than a competing default route because the HVR WAN owns the router default path. Never first deploy over SSH through WAN or LAN unless disconnect is expected.
 
 Preflight identifies the current default-route interface. If it equals WAN or LAN, `PHYSICAL_MANAGEMENT_INTERFACE_ACK` must equal that exact name; default `none` rejects takeover. NetworkManager and systemd-networkd are queried per configured deployment interface, and managed interfaces are rejected. R13 never stops/disables a manager, rewrites Netplan, or generates manager configuration. Prepare the explicit deployment interfaces as unmanaged with normal host administration.
 
-`sudo make physical-check` is read-only. It reports authorization, interface/address/link state, static addresses, gateway, telemetry setting, current default interface, and forwarding.
+`sudo make physical-check` is read-only. It reports authorization, interface/address/link state, WAN mode and static values when applicable, telemetry setting, current default interface, and forwarding.
 
 ## Ownership and lifecycle
 
-Physical topology accepts no global address or the exact desired address; anything else conflicts. It brings WAN/LAN up and adds only missing exact addresses/default route. Markers record whether HVR owns each address, link transition, and route, so pre-existing exact state is preserved.
+`PHYSICAL_WAN_MODE` selects `static` or `dhcp`; omission remains `static` for compatibility. Static mode accepts no global WAN address or the exact configured address and preserves the existing address/route ownership markers. DHCP mode requires the selected WAN to have no stale global IPv4/default-route state before first start, brings up only that link, and runs HVR's own long-lived ISC dhclient until teardown. In both modes, conflicting state fails closed.
 
 Routing snapshots `net.ipv4.ip_forward`. Prior `1` remains `1`; an HVR-owned `0` to `1` transition restores `0`. NAT remains only `table ip hvr-nat`, with LAN-source masquerade on configured WAN. Firewall remains only `table inet hvr-filter`: default-drop forwarding, invalid drop, established/related accept, LAN-to-WAN new accept, and unsolicited WAN-to-LAN drop. INPUT/OUTPUT are untouched.
 
-Physical DHCP runs only project dnsmasq bound to the exact LAN, with loopback explicitly excluded; there is no physical dhclient. DNS reuses that process with cache/native logging and an explicit upstream, and HVR does not need to own `127.0.0.1:53` or `[::1]:53`. Listener validation rejects WAN/wildcard listeners. `systemd-resolved` may remain active on its normal stub addresses, and `/etc/resolv.conf` is unchanged. The generic Ubuntu `dnsmasq.service` must not run concurrently because it can compete for HVR's dedicated physical DHCP/DNS sockets. Read-only physical preflight refuses an active `dnsmasq.service` and tells the administrator to stop and disable it deliberately; HVR never stops or disables host services automatically.
+Physical LAN DHCP runs only project dnsmasq bound to the exact LAN, with loopback explicitly excluded. In WAN DHCP mode, the separate client lives under `/run/home-virtual-router/physical/wan-dhcp/`: a private trusted `/sbin/dhclient` or `/usr/sbin/dhclient` copy, hook, PID/start-time identity, lease, log, and atomically replaced effective-state file. Its hook owns only the selected WAN address/default route and never changes `/etc/resolv.conf`; HVR continues using configured `DNS_UPSTREAM`. DNS reuses LAN dnsmasq with cache/native logging and an explicit upstream. Listener validation rejects WAN/wildcard listeners. NetworkManager/systemd-networkd must leave both deployment NICs unmanaged, but HVR never disables either manager globally or kills an unrelated DHCP client.
 
 IPFIX runs pmacctd/nfprobe on the host and captures IPv4 on the deployment LAN before NAT, preserving v10 and destination configuration. R10 reads host `/proc` and `/sys/class/net` using unchanged semantic `lan`/`wan` schema. R11 runs on the host and preserves its HTTP POST protocol. R13 opens no telemetry firewall holes.
 
@@ -60,7 +60,7 @@ It proves cold start, exact host-interface addresses/routes/forwarding/nftables 
 
 Physical runtime paths are initialized by their owning stage rather than by lab R2 side effects. The runtime orchestrator owns `/run/home-virtual-router/runtime` at `0750`; physical topology/routing owns `physical` at `0750`; physical DHCP prepares `dhcp` as root-owned `0755` before rendering dnsmasq configuration; DNS owns `dns` at `0755`; IPFIX owns `ipfix` at `0750`; and R11 owns `metrics-export`. Stage teardown removes only its known files and removes an empty directory where its existing lifecycle supports that operation.
 
-For first host-interface deployment, keep systemd disabled, use a local console, prepare two explicit unmanaged deployment interfaces, install/edit config, create the marker, then run:
+For first host-interface deployment, keep systemd disabled, use a local console, prepare two explicit unmanaged deployment interfaces, install/edit config, create the marker, then run. For DHCP WAN, set `PHYSICAL_WAN_MODE=dhcp` and omit `PHYSICAL_WAN_ADDRESS`, `PHYSICAL_WAN_PREFIX_LENGTH`, and `PHYSICAL_WAN_GATEWAY`; for static WAN, set `static` (or omit the mode) and retain all three.
 
 ```sh
 sudo make physical-check
@@ -72,4 +72,6 @@ sudo make runtime-check
 
 On failure inspect `/run/home-virtual-router/runtime/startup.log`, `last-error`, state/config snapshot, and `/run/home-virtual-router/physical/`. Restore the original configuration before `runtime-stop`; never delete ownership files or nftables tables blindly. The R12 unit can be rendered and verified but is never installed/enabled automatically.
 
-R14 validates an external WAN/client path using pre-existing host interfaces, including a two-vNIC Ubuntu UTM deployment. R15 owns persistent background service operation, boot ordering, automatic startup, restart policy, and shutdown behavior. R13 excludes WAN DHCP, PPPoE, ISP VLANs, IPv6, Wi-Fi AP, bridging, VLAN switching, multi-WAN/failover, QoS, port forwarding, UPnP/NAT-PMP/PCP, VPN, TLS/auth, SNMP, manager reconfiguration, automatic NIC discovery, and appliance images.
+The primary deployment is intentionally double NAT: Internet/ISP or CGNAT → ISP-provided CPE NAT → HVR WAN via ordinary IPv4 DHCP → HVR NAT/firewall/DNS/telemetry → HVR LAN. It needs no CPE DMZ, bridge/IP-passthrough mode, static route, DHCP reservation, port-control protocol, or vendor API. Normal outbound access works; unsolicited inbound Internet reachability may need optional upstream configuration and can be impossible under CGNAT. That is outside baseline routing acceptance, and DMZ is not recommended.
+
+R14 validates an external WAN/client path using pre-existing host interfaces, including a two-vNIC Ubuntu UTM deployment. R15 owns persistent background service operation, boot ordering, automatic startup, restart policy, and shutdown behavior. Physical deployment still excludes PPPoE, ISP VLANs, IPv6, Wi-Fi AP, bridging, VLAN switching, multi-WAN/failover, QoS, port forwarding, UPnP/NAT-PMP/PCP, VPN, TLS/auth, SNMP, manager reconfiguration, automatic NIC discovery, and appliance images.

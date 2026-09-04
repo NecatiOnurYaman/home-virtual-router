@@ -24,6 +24,15 @@ readonly PHYSICAL_RUNTIME_CONFIG_SNAPSHOT="/run/home-virtual-router/runtime/conf
 readonly PHYSICAL_HOST_FORWARD_LAN_WAN_COMMENT="hvr-r5-host-forward-lan-wan"
 readonly PHYSICAL_HOST_FORWARD_WAN_LAN_COMMENT="hvr-r5-host-forward-wan-lan"
 readonly PHYSICAL_HOST_FORWARD_OWNED="$PHYSICAL_RUNTIME_DIR/host-forward-compat-owned"
+readonly PHYSICAL_WAN_DHCP_DIR="$PHYSICAL_RUNTIME_DIR/wan-dhcp"
+readonly PHYSICAL_WAN_DHCLIENT_BINARY="$PHYSICAL_WAN_DHCP_DIR/dhclient"
+readonly PHYSICAL_WAN_DHCLIENT_PID_FILE="$PHYSICAL_WAN_DHCP_DIR/dhclient.pid"
+readonly PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE="$PHYSICAL_WAN_DHCP_DIR/dhclient.starttime"
+readonly PHYSICAL_WAN_DHCLIENT_LEASE_FILE="$PHYSICAL_WAN_DHCP_DIR/dhclient.leases"
+readonly PHYSICAL_WAN_DHCLIENT_HOOK="$PHYSICAL_WAN_DHCP_DIR/dhclient-hook"
+readonly PHYSICAL_WAN_DHCLIENT_LOG="$PHYSICAL_WAN_DHCP_DIR/dhclient.log"
+readonly PHYSICAL_WAN_DHCP_STATE="$PHYSICAL_WAN_DHCP_DIR/state.env"
+readonly PHYSICAL_WAN_DHCP_INTERFACE_FILE="$PHYSICAL_WAN_DHCP_DIR/interface"
 
 require_physical_authorization() {
   require_linux || return 1
@@ -75,8 +84,61 @@ physical_interface_is_deployment_eligible() {
   done
   ! physical_interface_is_bridge "$interface" && ! physical_interface_is_veth "$interface"
 }
+
+physical_wan_mode() { printf '%s\n' "${PHYSICAL_WAN_MODE:-static}"; }
+
+physical_wan_dhcp_state_field() {
+  local key="$1"
+  [ -f "$PHYSICAL_WAN_DHCP_STATE" ] && [ ! -L "$PHYSICAL_WAN_DHCP_STATE" ] || return 1
+  [ "$(stat -c %u:%a "$PHYSICAL_WAN_DHCP_STATE" 2>/dev/null)" = 0:600 ] || return 1
+  awk -F= -v key="$key" '$1 == key {sub(/^[^=]*=/, ""); print; found=1} END {exit !found}' "$PHYSICAL_WAN_DHCP_STATE"
+}
+
+physical_wan_dhcp_state_valid() {
+  [ -f "$PHYSICAL_WAN_DHCP_STATE" ] && [ ! -L "$PHYSICAL_WAN_DHCP_STATE" ] || return 1
+  [ "$(stat -c %u:%a "$PHYSICAL_WAN_DHCP_STATE" 2>/dev/null)" = 0:600 ] || return 1
+  python3 - "$PHYSICAL_WAN_DHCP_STATE" "$PHYSICAL_WAN_INTERFACE" "$LAN_SUBNET" <<'PY'
+import ipaddress, pathlib, sys
+required = {"WAN_INTERFACE", "WAN_ADDRESS", "WAN_PREFIX_LENGTH", "WAN_GATEWAY", "DHCP_REASON",
+            "DHCP_LEASE_TIME", "DHCP_RENEWAL_TIME", "DHCP_REBINDING_TIME"}
+values = {}
+for line in pathlib.Path(sys.argv[1]).read_text(encoding="ascii").splitlines():
+    key, separator, value = line.partition("=")
+    assert separator and key in required and key not in values and value
+    values[key] = value
+assert values.keys() == required and values["WAN_INTERFACE"] == sys.argv[2]
+assert values["DHCP_REASON"] in {"BOUND", "RENEW", "REBIND", "REBOOT", "TIMEOUT"}
+assert values["DHCP_LEASE_TIME"].isdigit() and int(values["DHCP_LEASE_TIME"]) > 0
+for key in ("DHCP_RENEWAL_TIME", "DHCP_REBINDING_TIME"):
+    assert values[key] == "unknown" or (values[key].isdigit() and int(values[key]) >= 0)
+address = ipaddress.IPv4Address(values["WAN_ADDRESS"])
+network = ipaddress.IPv4Network(f"{address}/{values['WAN_PREFIX_LENGTH']}", strict=False)
+gateway = ipaddress.IPv4Address(values["WAN_GATEWAY"])
+lan = ipaddress.IPv4Network(sys.argv[3], strict=True)
+assert gateway in network and gateway != address and not network.overlaps(lan)
+PY
+}
+
+physical_effective_wan_address() {
+  if [ "$(physical_wan_mode)" = dhcp ]; then
+    physical_wan_dhcp_state_valid || return 1
+    physical_wan_dhcp_state_field WAN_ADDRESS
+  else printf '%s\n' "$PHYSICAL_WAN_ADDRESS"; fi
+}
+physical_effective_wan_prefix() {
+  if [ "$(physical_wan_mode)" = dhcp ]; then physical_wan_dhcp_state_valid || return 1; physical_wan_dhcp_state_field WAN_PREFIX_LENGTH
+  else printf '%s\n' "$PHYSICAL_WAN_PREFIX_LENGTH"; fi
+}
+physical_effective_wan_gateway() {
+  if [ "$(physical_wan_mode)" = dhcp ]; then physical_wan_dhcp_state_valid || return 1; physical_wan_dhcp_state_field WAN_GATEWAY
+  else printf '%s\n' "$PHYSICAL_WAN_GATEWAY"; fi
+}
+physical_effective_wan_cidr() { printf '%s/%s\n' "$(physical_effective_wan_address)" "$(physical_effective_wan_prefix)"; }
+
 physical_default_route_exact() {
-  ip -o -4 route show default | awk -v gateway="$PHYSICAL_WAN_GATEWAY" -v interface="$PHYSICAL_WAN_INTERFACE" '
+  local gateway
+  gateway="$(physical_effective_wan_gateway)" || return 1
+  ip -o -4 route show default | awk -v gateway="$gateway" -v interface="$PHYSICAL_WAN_INTERFACE" '
     $1 == "default" { via=""; dev=""; for (i=1;i<=NF;i++) { if ($i=="via") via=$(i+1); if ($i=="dev") dev=$(i+1) } if (via==gateway && dev==interface) found=1 }
     END { exit !found }
   '
@@ -87,7 +149,10 @@ physical_default_route_interface() {
 }
 
 physical_render_map() {
-  printf 'MAP_VERSION=2\n'
+  local wan_address wan_gateway
+  if [ "$(physical_wan_mode)" = dhcp ]; then wan_address=dhcp; wan_gateway=dhcp
+  else wan_address="$(physical_effective_wan_cidr)"; wan_gateway="$(physical_effective_wan_gateway)"; fi
+  printf 'MAP_VERSION=3\n'
   printf 'DEPLOYMENT_MODE=physical\n'
   printf 'ROUTER_NETNS=%s\n' "$(readlink /proc/self/ns/net)"
   printf 'WAN_INTERFACE=%s\n' "$PHYSICAL_WAN_INTERFACE"
@@ -96,8 +161,9 @@ physical_render_map() {
   printf 'LAN_INTERFACE=%s\n' "$PHYSICAL_LAN_INTERFACE"
   printf 'LAN_IFINDEX=%s\n' "$(cat "/sys/class/net/$PHYSICAL_LAN_INTERFACE/ifindex")"
   printf 'LAN_MAC=%s\n' "$(cat "/sys/class/net/$PHYSICAL_LAN_INTERFACE/address")"
-  printf 'WAN_ADDRESS=%s/%s\n' "$PHYSICAL_WAN_ADDRESS" "$PHYSICAL_WAN_PREFIX_LENGTH"
-  printf 'WAN_GATEWAY=%s\n' "$PHYSICAL_WAN_GATEWAY"
+  printf 'WAN_MODE=%s\n' "$(physical_wan_mode)"
+  printf 'WAN_ADDRESS=%s\n' "$wan_address"
+  printf 'WAN_GATEWAY=%s\n' "$wan_gateway"
   printf 'LAN_ADDRESS=%s/%s\n' "$ROUTER_LAN" "${LAN_SUBNET#*/}"
 }
 
@@ -106,7 +172,9 @@ physical_map_matches_live_config() {
 }
 
 physical_single_default_route_exact() {
-  ip -o -4 route show default | awk -v gateway="$PHYSICAL_WAN_GATEWAY" -v interface="$PHYSICAL_WAN_INTERFACE" '
+  local gateway
+  gateway="$(physical_effective_wan_gateway)" || return 1
+  ip -o -4 route show default | awk -v gateway="$gateway" -v interface="$PHYSICAL_WAN_INTERFACE" '
     $1 == "default" {
       count++; via=""; dev=""
       for (i=1;i<=NF;i++) { if ($i=="via") via=$(i+1); if ($i=="dev") dev=$(i+1) }
@@ -129,14 +197,16 @@ physical_runtime_owns_active_topology() {
 }
 
 physical_default_route_ownership_present() {
-  [ -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] || [ -L "$PHYSICAL_DEFAULT_ROUTE_OWNED" ]
+  [ -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] || [ -L "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] ||
+    { [ "$(physical_wan_mode)" = dhcp ] && physical_wan_dhclient_matches && physical_wan_dhcp_state_valid; }
 }
 
 physical_topology_ownership_present() {
   local marker
   for marker in "$PHYSICAL_MAP_FILE" "$PHYSICAL_DEFAULT_ROUTE_OWNED" \
     "$PHYSICAL_WAN_ADDRESS_OWNED" "$PHYSICAL_LAN_ADDRESS_OWNED" \
-    "$PHYSICAL_WAN_LINK_OWNED" "$PHYSICAL_LAN_LINK_OWNED" "$PHYSICAL_FORWARDING_ORIGINAL"; do
+    "$PHYSICAL_WAN_LINK_OWNED" "$PHYSICAL_LAN_LINK_OWNED" "$PHYSICAL_FORWARDING_ORIGINAL" \
+    "$PHYSICAL_WAN_DHCP_DIR"; do
     [ -e "$marker" ] || [ -L "$marker" ] || continue
     return 0
   done
@@ -153,8 +223,9 @@ physical_active_topology_ownership_verified() {
 }
 
 physical_owned_management_route_verified() {
-  [ -f "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] && [ ! -L "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] &&
-    [ "$(stat -c %u "$PHYSICAL_DEFAULT_ROUTE_OWNED")" = 0 ] &&
+  { { [ -f "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] && [ ! -L "$PHYSICAL_DEFAULT_ROUTE_OWNED" ] &&
+      [ "$(stat -c %u "$PHYSICAL_DEFAULT_ROUTE_OWNED")" = 0 ]; } ||
+    { [ "$(physical_wan_mode)" = dhcp ] && physical_wan_dhclient_matches && physical_wan_dhcp_state_valid; }; } &&
     physical_active_topology_ownership_verified && physical_single_default_route_exact
 }
 
@@ -218,6 +289,109 @@ physical_host_dnsmasq_service_absent() {
   fi
 }
 
+physical_wan_dhclient_candidate_matches() {
+  local pid="$1" executable commandline expected
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -r "/proc/$pid/cmdline" ] || return 1
+  executable="$(readlink -f "/proc/$pid/exe" 2>/dev/null)" || return 1
+  [ "$executable" = "$PHYSICAL_WAN_DHCLIENT_BINARY" ] || return 1
+  commandline="$(tr '\0' '\n' < "/proc/$pid/cmdline")"
+  expected="$(printf '%s\n' "$PHYSICAL_WAN_DHCLIENT_BINARY" -4 -d -v -pf "$PHYSICAL_WAN_DHCLIENT_PID_FILE" \
+    -lf "$PHYSICAL_WAN_DHCLIENT_LEASE_FILE" -sf "$PHYSICAL_WAN_DHCLIENT_HOOK" "$PHYSICAL_WAN_INTERFACE")"
+  [ "$commandline" = "$expected" ] || return 1
+  [ "$(cat "$PHYSICAL_WAN_DHCLIENT_PID_FILE" 2>/dev/null)" = "$pid" ]
+}
+
+physical_wan_dhclient_matches() {
+  local pid expected_starttime actual_starttime
+  [ "$(stat -c %u:%g:%a "$PHYSICAL_WAN_DHCLIENT_BINARY" 2>/dev/null)" = 0:0:755 ] &&
+    [ "$(stat -c %u:%g:%a "$PHYSICAL_WAN_DHCLIENT_HOOK" 2>/dev/null)" = 0:0:700 ] &&
+    [ "$(stat -c %u:%g:%a "$PHYSICAL_WAN_DHCLIENT_PID_FILE" 2>/dev/null)" = 0:0:600 ] &&
+    [ "$(stat -c %u:%g:%a "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE" 2>/dev/null)" = 0:0:600 ] &&
+    [ "$(stat -c %u:%g:%a "$PHYSICAL_WAN_DHCLIENT_LEASE_FILE" 2>/dev/null)" = 0:0:600 ] &&
+    [ "$(stat -c %u:%g:%a "$PHYSICAL_WAN_DHCP_INTERFACE_FILE" 2>/dev/null)" = 0:0:600 ] || return 1
+  pid="$(cat "$PHYSICAL_WAN_DHCLIENT_PID_FILE" 2>/dev/null)" || return 1
+  expected_starttime="$(cat "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE" 2>/dev/null)" || return 1
+  physical_wan_dhclient_candidate_matches "$pid" || return 1
+  actual_starttime="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null)" || return 1
+  [ "$actual_starttime" = "$expected_starttime" ]
+}
+
+physical_unrelated_wan_dhcp_client_absent() {
+  local process pid executable commandline
+  for process in /proc/[1-9]*; do
+    pid="${process##*/}"
+    [ -r "$process/cmdline" ] || continue
+    executable="$(readlink -f "$process/exe" 2>/dev/null || true)"
+    case "$executable" in */dhclient|"$PHYSICAL_WAN_DHCLIENT_BINARY") ;;
+      *) continue ;;
+    esac
+    commandline="$(tr '\0' '\n' < "$process/cmdline")"
+    printf '%s\n' "$commandline" | grep -F -x -- "$PHYSICAL_WAN_INTERFACE" >/dev/null || continue
+    physical_wan_dhclient_candidate_matches "$pid" && continue
+    die "an unrelated DHCP client is already operating on $PHYSICAL_WAN_INTERFACE; refusing ambiguous ownership"
+    return 1
+  done
+}
+
+physical_prepare_wan_dhcp_runtime() {
+  local dhclient_source
+  dhclient_source="$(command -v dhclient)" || die "ISC dhclient is required for PHYSICAL_WAN_MODE=dhcp"
+  case "$dhclient_source" in /sbin/dhclient|/usr/sbin/dhclient) ;; *) die "untrusted dhclient path: $dhclient_source" ;; esac
+  install -d -o 0 -g 0 -m 0750 "$PHYSICAL_RUNTIME_DIR"
+  install -d -o 0 -g 0 -m 0700 "$PHYSICAL_WAN_DHCP_DIR"
+  install -o 0 -g 0 -m 0755 "$dhclient_source" "$PHYSICAL_WAN_DHCLIENT_BINARY"
+  install -o 0 -g 0 -m 0700 "$HVR_REPO_DIR/physical/scripts/physical-wan-dhclient-hook.sh" "$PHYSICAL_WAN_DHCLIENT_HOOK"
+  install -o 0 -g 0 -m 0600 /dev/null "$PHYSICAL_WAN_DHCLIENT_LEASE_FILE"
+  install -o 0 -g 0 -m 0600 /dev/null "$PHYSICAL_WAN_DHCLIENT_PID_FILE"
+  install -o 0 -g 0 -m 0600 /dev/null "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE"
+  install -o 0 -g 0 -m 0600 /dev/null "$PHYSICAL_WAN_DHCLIENT_LOG"
+  printf '%s\n' "$PHYSICAL_WAN_INTERFACE" > "$PHYSICAL_WAN_DHCP_INTERFACE_FILE"
+  chmod 0600 "$PHYSICAL_WAN_DHCP_INTERFACE_FILE"
+}
+
+physical_start_wan_dhcp() {
+  local pid starttime identity_ready=0 attempt
+  physical_wan_dhclient_matches && return 0
+  physical_unrelated_wan_dhcp_client_absent
+  physical_prepare_wan_dhcp_runtime
+  "$PHYSICAL_WAN_DHCLIENT_BINARY" -4 -d -v -pf "$PHYSICAL_WAN_DHCLIENT_PID_FILE" \
+    -lf "$PHYSICAL_WAN_DHCLIENT_LEASE_FILE" -sf "$PHYSICAL_WAN_DHCLIENT_HOOK" \
+    "$PHYSICAL_WAN_INTERFACE" > "$PHYSICAL_WAN_DHCLIENT_LOG" 2>&1 &
+  pid=$!
+  for ((attempt=0; attempt<50; attempt++)); do
+    if physical_wan_dhclient_candidate_matches "$pid"; then identity_ready=1; break; fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  [ "$identity_ready" -eq 1 ] || die "physical WAN dhclient did not establish exact process identity; inspect $PHYSICAL_WAN_DHCLIENT_LOG"
+  starttime="$(awk '{print $22}' "/proc/$pid/stat")"
+  printf '%s\n' "$starttime" > "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE"
+  chmod 0600 "$PHYSICAL_WAN_DHCLIENT_PID_FILE" "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE"
+  for ((attempt=0; attempt<300; attempt++)); do
+    physical_wan_dhcp_state_valid && physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$(physical_effective_wan_cidr)" && physical_default_route_exact && return 0
+    physical_wan_dhclient_matches || break
+    sleep 0.1
+  done
+  die "physical WAN DHCP did not acquire a usable lease within 30 seconds; inspect $PHYSICAL_WAN_DHCLIENT_LOG"
+}
+
+physical_stop_wan_dhcp() {
+  local pid address prefix gateway attempt
+  physical_wan_dhclient_matches || die "physical WAN dhclient identity is inconsistent; refusing process termination"
+  pid="$(cat "$PHYSICAL_WAN_DHCLIENT_PID_FILE")"
+  address="$(physical_effective_wan_address)"; prefix="$(physical_effective_wan_prefix)"; gateway="$(physical_effective_wan_gateway)"
+  kill -TERM "$pid"
+  for ((attempt=0; attempt<50; attempt++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  ! kill -0 "$pid" 2>/dev/null || die "owned physical WAN dhclient did not terminate"
+  ip route del default via "$gateway" dev "$PHYSICAL_WAN_INTERFACE" 2>/dev/null || true
+  ip address del "$address/$prefix" dev "$PHYSICAL_WAN_INTERFACE" 2>/dev/null || true
+  rm -f -- "$PHYSICAL_WAN_DHCLIENT_BINARY" "$PHYSICAL_WAN_DHCLIENT_PID_FILE" \
+    "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE" "$PHYSICAL_WAN_DHCLIENT_LEASE_FILE" \
+    "$PHYSICAL_WAN_DHCLIENT_HOOK" "$PHYSICAL_WAN_DHCLIENT_LOG" \
+    "$PHYSICAL_WAN_DHCP_STATE" "$PHYSICAL_WAN_DHCP_INTERFACE_FILE"
+  rmdir "$PHYSICAL_WAN_DHCP_DIR"
+}
+
 physical_preflight() {
   local interface addresses desired
   require_physical_authorization
@@ -231,8 +405,12 @@ physical_preflight() {
     physical_interface_unmanaged "$interface"
   done
   physical_require_management_ack
+  if [ "$(physical_wan_mode)" = dhcp ]; then physical_unrelated_wan_dhcp_client_absent; fi
   for interface in "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_LAN_INTERFACE"; do
-    if [ "$interface" = "$PHYSICAL_WAN_INTERFACE" ]; then desired="$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH"; else desired="$ROUTER_LAN/${LAN_SUBNET#*/}"; fi
+    if [ "$interface" = "$PHYSICAL_WAN_INTERFACE" ]; then
+      if [ "$(physical_wan_mode)" = dhcp ]; then desired=""; physical_wan_dhcp_state_valid && desired="$(physical_effective_wan_cidr)"
+      else desired="$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH"; fi
+    else desired="$ROUTER_LAN/${LAN_SUBNET#*/}"; fi
     addresses="$(ip -o -4 address show dev "$interface" scope global | awk '{print $4}')"
     if [ -n "$addresses" ] && [ "$addresses" != "$desired" ]; then
       die "$interface has conflicting IPv4 state; expected only $desired or no global address"
@@ -250,29 +428,39 @@ physical_write_map() {
 }
 
 physical_topology_healthy() {
+  local wan_cidr
+  wan_cidr="$(physical_effective_wan_cidr)" || return 1
   physical_map_matches_live_config &&
     physical_interface_exists "$PHYSICAL_WAN_INTERFACE" && physical_interface_exists "$PHYSICAL_LAN_INTERFACE" &&
     physical_interface_is_up "$PHYSICAL_WAN_INTERFACE" && physical_interface_is_up "$PHYSICAL_LAN_INTERFACE" &&
-    physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH" &&
+    { [ "$(physical_wan_mode)" != dhcp ] || physical_wan_dhclient_matches; } &&
+    physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$wan_cidr" &&
     physical_address_exists "$PHYSICAL_LAN_INTERFACE" "$ROUTER_LAN/${LAN_SUBNET#*/}" && physical_default_route_exact
 }
 
 physical_topology_absent() {
-  [ ! -e "$PHYSICAL_MAP_FILE" ] && physical_preflight >/dev/null
+  [ ! -e "$PHYSICAL_MAP_FILE" ] && [ ! -e "$PHYSICAL_WAN_DHCP_DIR" ] && physical_preflight >/dev/null
 }
 
 physical_topology_enable() {
   physical_preflight
-  physical_write_map
+  [ "$(physical_wan_mode)" != static ] || physical_write_map
   if ! physical_interface_is_up "$PHYSICAL_WAN_INTERFACE"; then ip link set dev "$PHYSICAL_WAN_INTERFACE" up; touch "$PHYSICAL_WAN_LINK_OWNED"; fi
-  if ! physical_interface_is_up "$PHYSICAL_LAN_INTERFACE"; then ip link set dev "$PHYSICAL_LAN_INTERFACE" up; touch "$PHYSICAL_LAN_LINK_OWNED"; fi
-  if ! physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH"; then
+  if [ "$(physical_wan_mode)" = dhcp ]; then
+    if ! physical_start_wan_dhcp; then
+      physical_wan_dhclient_matches && physical_stop_wan_dhcp || true
+      [ ! -e "$PHYSICAL_WAN_LINK_OWNED" ] || { ip link set dev "$PHYSICAL_WAN_INTERFACE" down; rm -f -- "$PHYSICAL_WAN_LINK_OWNED"; }
+      return 1
+    fi
+    physical_write_map
+  elif ! physical_address_exists "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH"; then
     ip address add "$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH" dev "$PHYSICAL_WAN_INTERFACE"; touch "$PHYSICAL_WAN_ADDRESS_OWNED"
   fi
+  if ! physical_interface_is_up "$PHYSICAL_LAN_INTERFACE"; then ip link set dev "$PHYSICAL_LAN_INTERFACE" up; touch "$PHYSICAL_LAN_LINK_OWNED"; fi
   if ! physical_address_exists "$PHYSICAL_LAN_INTERFACE" "$ROUTER_LAN/${LAN_SUBNET#*/}"; then
     ip address add "$ROUTER_LAN/${LAN_SUBNET#*/}" dev "$PHYSICAL_LAN_INTERFACE"; touch "$PHYSICAL_LAN_ADDRESS_OWNED"
   fi
-  if ! physical_default_route_exact; then
+  if [ "$(physical_wan_mode)" = static ] && ! physical_default_route_exact; then
     ip route add default via "$PHYSICAL_WAN_GATEWAY" dev "$PHYSICAL_WAN_INTERFACE"; touch "$PHYSICAL_DEFAULT_ROUTE_OWNED"
   fi
   physical_topology_healthy || die "physical interfaces did not reach the exact configured state"
@@ -280,7 +468,9 @@ physical_topology_enable() {
 
 physical_topology_disable() {
   [ -r "$PHYSICAL_MAP_FILE" ] || die "physical ownership map is absent; refusing interface teardown"
-  if [ -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ]; then ip route del default via "$PHYSICAL_WAN_GATEWAY" dev "$PHYSICAL_WAN_INTERFACE"; fi
+  physical_map_matches_live_config || die "physical ownership map does not match current configuration/state; refusing interface teardown"
+  if [ "$(physical_wan_mode)" = dhcp ]; then physical_stop_wan_dhcp
+  elif [ -e "$PHYSICAL_DEFAULT_ROUTE_OWNED" ]; then ip route del default via "$PHYSICAL_WAN_GATEWAY" dev "$PHYSICAL_WAN_INTERFACE"; fi
   if [ -e "$PHYSICAL_LAN_ADDRESS_OWNED" ]; then ip address del "$ROUTER_LAN/${LAN_SUBNET#*/}" dev "$PHYSICAL_LAN_INTERFACE"; fi
   if [ -e "$PHYSICAL_WAN_ADDRESS_OWNED" ]; then ip address del "$PHYSICAL_WAN_ADDRESS/$PHYSICAL_WAN_PREFIX_LENGTH" dev "$PHYSICAL_WAN_INTERFACE"; fi
   if [ -e "$PHYSICAL_LAN_LINK_OWNED" ]; then ip link set dev "$PHYSICAL_LAN_INTERFACE" down; fi
@@ -638,6 +828,7 @@ physical_dhcp_disable() {
   remove_project_dhcp_files
 }
 physical_dns_enable() {
+  local wan_address
   physical_dhcp_healthy || die "physical DHCP must be healthy before DNS"
   stop_project_process "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"
   mkdir -p "$DNS_RUNTIME_DIR"
@@ -648,8 +839,9 @@ physical_dns_enable() {
   touch "$DNS_ENABLED_FILE"
   physical_start_dnsmasq
   physical_dns_healthy || die "physical DNS did not reach LAN-only state"
+  wan_address="$(physical_effective_wan_address)" || die "effective WAN address is unavailable"
   lan_link_local_addresses="$(ip -o -6 address show dev "$PHYSICAL_LAN_INTERFACE" scope link | awk '{sub(/\/.*/, "", $4); print $4}')"
-  ss -lntuH | validate_router_dns_listeners "$ROUTER_LAN" "$PHYSICAL_WAN_ADDRESS" \
+  ss -lntuH | validate_router_dns_listeners "$ROUTER_LAN" "$wan_address" \
     "$PHYSICAL_LAN_INTERFACE" "$lan_link_local_addresses" ||
     die "physical DNS listener policy rejected WAN, wildcard, or missing LAN UDP/TCP listeners"
 }

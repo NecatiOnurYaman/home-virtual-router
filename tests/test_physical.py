@@ -20,6 +20,7 @@ HARDWARE_CHECK = ROOT / "physical/scripts/hardware-check.sh"
 HARDWARE_TEST = ROOT / "physical/scripts/hardware-test.sh"
 HARDWARE_POST_REBOOT = ROOT / "physical/scripts/hardware-post-reboot.sh"
 HARDWARE_DOC = ROOT / "docs/physical-hardware-validation.md"
+PHYSICAL_WAN_DHCLIENT_HOOK = ROOT / "physical/scripts/physical-wan-dhclient-hook.sh"
 
 spec = importlib.util.spec_from_file_location("validate_config_physical", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
@@ -35,6 +36,36 @@ class PhysicalConfigTests(unittest.TestCase):
         values = self.values()
         validate_config.validate(values)
         self.assertEqual(values["DEPLOYMENT_MODE"], "physical")
+        self.assertEqual(values["PHYSICAL_WAN_MODE"], "static")
+
+    def test_physical_wan_modes_preserve_legacy_static_and_accept_dhcp(self) -> None:
+        explicit_static = self.values()
+        validate_config.validate(explicit_static)
+        legacy_static = self.values()
+        del legacy_static["PHYSICAL_WAN_MODE"]
+        validate_config.validate(legacy_static)
+        dhcp = self.values()
+        dhcp["PHYSICAL_WAN_MODE"] = "dhcp"
+        for key in ("PHYSICAL_WAN_ADDRESS", "PHYSICAL_WAN_PREFIX_LENGTH", "PHYSICAL_WAN_GATEWAY"):
+            del dhcp[key]
+        validate_config.validate(dhcp)
+
+    def test_physical_wan_mode_rejects_invalid_and_contradictory_values(self) -> None:
+        invalid = self.values()
+        invalid["PHYSICAL_WAN_MODE"] = "automatic"
+        with self.assertRaisesRegex(ValueError, "must be static or dhcp"):
+            validate_config.validate(invalid)
+        contradictory = self.values()
+        contradictory["PHYSICAL_WAN_MODE"] = "dhcp"
+        with self.assertRaisesRegex(ValueError, "must omit static WAN keys"):
+            validate_config.validate(contradictory)
+
+    def test_lab_mode_remains_static_only(self) -> None:
+        values = validate_config.parse(ROOT / "lab/config/defaults.env")
+        validate_config.validate(values)
+        values["PHYSICAL_WAN_MODE"] = "dhcp"
+        with self.assertRaisesRegex(ValueError, "only supported for physical"):
+            validate_config.validate(values)
 
     def test_requires_distinct_explicit_interfaces(self) -> None:
         for key, value in (
@@ -109,6 +140,96 @@ class PhysicalSafetyTests(unittest.TestCase):
         self.assertIn('source "$r14_script_dir/hardware-common.sh"', hardware_test)
         self.assertNotIn('"$script_dir/', hardware_test)
         self.assertNotIn('"$repo_dir/', hardware_test)
+
+    def test_physical_wan_dhcp_is_private_long_lived_and_exactly_owned(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        hook = PHYSICAL_WAN_DHCLIENT_HOOK.read_text(encoding="utf-8")
+        for path in (
+            "wan-dhcp", "dhclient.pid", "dhclient.starttime", "dhclient.leases",
+            "dhclient-hook", "dhclient.log", "state.env", "interface",
+        ):
+            self.assertIn(path, common + hook)
+        self.assertIn('/sbin/dhclient|/usr/sbin/dhclient)', common)
+        self.assertIn('install -o 0 -g 0 -m 0755 "$dhclient_source"', common)
+        self.assertIn('physical_wan_dhclient_candidate_matches', common)
+        self.assertIn('/proc/$pid/stat', common)
+        self.assertIn('"$PHYSICAL_WAN_INTERFACE"', common)
+        self.assertIn('-4 -d -v -pf', common)
+        self.assertNotIn(' -1 ', common)
+        for forbidden in ("pkill", "killall", "dhcpcd", "systemctl stop NetworkManager", "systemctl disable NetworkManager"):
+            self.assertNotIn(forbidden, common + hook)
+
+    def test_physical_wan_hook_records_atomic_state_without_host_dns_changes(self) -> None:
+        hook = PHYSICAL_WAN_DHCLIENT_HOOK.read_text(encoding="utf-8")
+        for field in ("WAN_INTERFACE", "WAN_ADDRESS", "WAN_PREFIX_LENGTH", "WAN_GATEWAY", "DHCP_REASON", "DHCP_LEASE_TIME"):
+            self.assertIn(field, hook)
+        self.assertIn('mktemp "$state_dir/state.env.XXXXXX"', hook)
+        self.assertIn('mv -f -- "$temporary" "$state_file"', hook)
+        self.assertIn('ip address replace', hook)
+        self.assertIn('ip route replace default', hook)
+        self.assertNotIn("resolv.conf", hook.split("# This hook deliberately")[0])
+
+    def test_effective_wan_state_drives_health_dns_and_r14_nat(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        for helper in ("physical_effective_wan_address", "physical_effective_wan_prefix", "physical_effective_wan_gateway", "physical_effective_wan_cidr"):
+            self.assertIn(helper, common)
+        health = common[common.index("physical_topology_healthy()"):common.index("physical_topology_absent()")]
+        for required in ("physical_wan_dhclient_matches", "physical_effective_wan_cidr", "physical_default_route_exact"):
+            self.assertIn(required, health)
+        self.assertNotIn("PHYSICAL_WAN_ADDRESS/", health)
+        self.assertIn('wan_address="$(physical_effective_wan_address)"', hardware)
+        self.assertNotIn('$PHYSICAL_WAN_ADDRESS > $target', hardware)
+
+        static = self.run_function(
+            "PHYSICAL_WAN_MODE=static; PHYSICAL_WAN_ADDRESS=192.0.2.2; "
+            "PHYSICAL_WAN_PREFIX_LENGTH=24; PHYSICAL_WAN_GATEWAY=192.0.2.1",
+            "physical_effective_wan_cidr && physical_effective_wan_gateway",
+        )
+        self.assertEqual(static.returncode, 0, static.stderr)
+        self.assertEqual(static.stdout.splitlines(), ["192.0.2.2/24", "192.0.2.1"])
+
+    def test_dhcp_topology_health_tracks_process_address_and_route(self) -> None:
+        definitions = '''
+PHYSICAL_WAN_MODE=dhcp
+PHYSICAL_WAN_INTERFACE=wan0
+PHYSICAL_LAN_INTERFACE=lan0
+ROUTER_LAN=10.0.0.1
+LAN_SUBNET=10.0.0.0/24
+physical_wan_dhcp_state_valid(){ return 0; }
+physical_wan_dhcp_state_field(){ case "$1" in WAN_ADDRESS) echo 192.168.1.20 ;; WAN_PREFIX_LENGTH) echo 24 ;; WAN_GATEWAY) echo 192.168.1.1 ;; esac; }
+physical_map_matches_live_config(){ return 0; }
+physical_interface_exists(){ return 0; }
+physical_interface_is_up(){ return 0; }
+physical_wan_dhclient_matches(){ return "${PROCESS_HEALTH:-0}"; }
+physical_address_exists(){ [ "${ADDRESS_HEALTH:-1}" = 1 ]; }
+physical_default_route_exact(){ [ "${ROUTE_HEALTH:-1}" = 1 ]; }
+'''
+        for label, process, address, route, expected in (
+            ("valid", 0, 1, 1, True),
+            ("dhclient dead", 1, 1, 1, False),
+            ("address missing", 0, 0, 1, False),
+            ("route drift", 0, 1, 0, False),
+        ):
+            with self.subTest(label=label):
+                result = self.run_function(
+                    definitions + f"PROCESS_HEALTH={process}; ADDRESS_HEALTH={address}; ROUTE_HEALTH={route}",
+                    "physical_topology_healthy",
+                )
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
+
+    def test_physical_wan_dhcp_start_is_bounded_idempotent_and_teardown_is_exact(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        start = common[common.index("physical_start_wan_dhcp()"):common.index("physical_stop_wan_dhcp()")]
+        stop = common[common.index("physical_stop_wan_dhcp()"):common.index("physical_preflight()")]
+        self.assertIn("physical_wan_dhclient_matches && return 0", start)
+        self.assertIn("attempt<300", start)
+        self.assertIn("physical_wan_dhcp_state_valid", start)
+        self.assertIn("physical_wan_dhclient_matches || die", stop)
+        self.assertIn('kill -TERM "$pid"', stop)
+        self.assertIn('ip route del default via "$gateway"', stop)
+        self.assertIn('ip address del "$address/$prefix"', stop)
+        self.assertNotIn("pkill", stop)
 
     def test_deployment_eligibility_is_ethernet_and_driver_bus_independent(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
@@ -374,7 +495,7 @@ ip(){
             common.index("physical_require_management_ack()")
         ]
         for evidence in (
-            "MAP_VERSION=2", "ROUTER_NETNS", "WAN_IFINDEX", "WAN_MAC", "LAN_IFINDEX", "LAN_MAC",
+            "MAP_VERSION=3", "ROUTER_NETNS", "WAN_IFINDEX", "WAN_MAC", "LAN_IFINDEX", "LAN_MAC",
             "WAN_ADDRESS", "WAN_GATEWAY", "LAN_ADDRESS", "PHYSICAL_DEFAULT_ROUTE_OWNED",
             "physical_single_default_route_exact", "PHYSICAL_RUNTIME_STATE",
             "PHYSICAL_RUNTIME_CONFIG_SNAPSHOT", "--field deployment", "--field status",

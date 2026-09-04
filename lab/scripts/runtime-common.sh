@@ -23,6 +23,7 @@ readonly RUNTIME_LOCK_RUNNER="$HVR_REPO_DIR/router/scripts/run_with_runtime_lock
 runtime_dependencies() {
   if [ "$DEPLOYMENT_MODE" = "physical" ]; then
     commands="ip nft dnsmasq sysctl python3 ss getent pmacctd ps readlink flock timeout tac cmp stat find sed sort"
+    [ "$(physical_wan_mode)" != dhcp ] || commands="$commands dhclient"
     [ "${HVR_INTERNAL_PHYSICAL_SIMULATION:-}" = 1 ] && commands="$commands nsenter"
   else
     commands="ip nft dnsmasq dhclient sysctl ping curl tcpdump python3 ss systemctl getent dig pmacctd ps readlink flock timeout tac cmp"
@@ -222,7 +223,11 @@ runtime_status_report() {
   desired="$(runtime_desired_stages)"
   printf 'HVR deployment mode: %s\n' "$DEPLOYMENT_MODE"
   if [ "$DEPLOYMENT_MODE" = "physical" ]; then
-    printf '  WAN: %s %s/%s via %s\n' "$PHYSICAL_WAN_INTERFACE" "$PHYSICAL_WAN_ADDRESS" "$PHYSICAL_WAN_PREFIX_LENGTH" "$PHYSICAL_WAN_GATEWAY"
+    if [ "$(physical_wan_mode)" = dhcp ]; then
+      printf '  WAN: %s dhcp' "$PHYSICAL_WAN_INTERFACE"
+      if physical_wan_dhcp_state_valid; then printf ' (%s via %s)' "$(physical_effective_wan_cidr)" "$(physical_effective_wan_gateway)"; fi
+      printf '\n'
+    else printf '  WAN: %s %s via %s\n' "$PHYSICAL_WAN_INTERFACE" "$(physical_effective_wan_cidr)" "$(physical_effective_wan_gateway)"; fi
     printf '  LAN: %s %s/%s\n' "$PHYSICAL_LAN_INTERFACE" "$ROUTER_LAN" "${LAN_SUBNET#*/}"
     printf '  telemetry interface: %s\n' "$PHYSICAL_TELEMETRY_INTERFACE"
   fi
