@@ -633,6 +633,11 @@ physical_dnsmasq_process_healthy() {
     [ "$(readlink "/proc/$pid/ns/pid" 2>/dev/null)" = "$(readlink /proc/self/ns/pid 2>/dev/null)" ]
 }
 
+physical_active_dnsmasq_log_file() {
+  if [ -e "$DNS_ENABLED_FILE" ]; then printf '%s\n' "$DNS_LOG_FILE"
+  else printf '%s\n' "$DNSMASQ_LOG_FILE"; fi
+}
+
 physical_dhcp_config_healthy() {
   grep -F -x "interface=$PHYSICAL_LAN_INTERFACE" "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
     grep -F -x 'except-interface=lo' "$DNSMASQ_CONFIG" >/dev/null 2>&1 &&
@@ -729,7 +734,8 @@ report_physical_dhcp_health() {
   local pid="<absent>" executable="<absent>" starttime="<absent>" process_netns="<absent>"
   local process_mntns="<absent>" process_pidns="<absent>" nspid="<absent>"
   local router_netns router_mntns router_pidns listener_inodes="<none>" process_inodes="<none>"
-  local expected_mode=standalone runtime_status="<absent>" runtime_owned="<absent>"
+  local expected_mode=standalone runtime_status="<absent>" runtime_owned="<absent>" active_log
+  active_log="$(physical_active_dnsmasq_log_file)"
   pid="$(cat "$DNSMASQ_PID_FILE" 2>/dev/null || echo '<absent>')"
   case "$pid" in
     *[!0-9]*|'') ;;
@@ -782,8 +788,8 @@ report_physical_dhcp_health() {
   echo 'LAN link/address:' >&2
   ip -details link show dev "$PHYSICAL_LAN_INTERFACE" >&2 2>/dev/null || true
   ip -o -4 address show dev "$PHYSICAL_LAN_INTERFACE" >&2 2>/dev/null || true
-  echo 'dnsmasq log (last 40 lines):' >&2
-  tail -n 40 "$DNSMASQ_LOG_FILE" >&2 2>/dev/null || echo '  <absent>' >&2
+  printf 'active dnsmasq log (last 40 lines): %s\n' "$active_log" >&2
+  tail -n 40 "$active_log" >&2 2>/dev/null || echo '  <absent>' >&2
 }
 
 physical_prepare_dhcp_runtime() {
@@ -812,10 +818,12 @@ physical_wait_for_dhcp_readiness() {
 }
 
 physical_start_dnsmasq() {
+  local active_log
   resolve_dnsmasq_identity
   physical_prepare_dhcp_runtime
-  touch "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE"
-  chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE"
+  active_log="$(physical_active_dnsmasq_log_file)"
+  touch "$DNSMASQ_LEASE_FILE" "$active_log"
+  chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DNSMASQ_LEASE_FILE" "$active_log"
   dnsmasq --test --conf-file="$DNSMASQ_CONFIG" >/dev/null
   dnsmasq --conf-file="$DNSMASQ_CONFIG"
   physical_wait_for_dhcp_readiness
@@ -832,9 +840,6 @@ physical_dns_enable() {
   physical_dhcp_healthy || die "physical DHCP must be healthy before DNS"
   stop_project_process "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"
   mkdir -p "$DNS_RUNTIME_DIR"
-  touch "$DNS_LOG_FILE"
-  resolve_dnsmasq_identity
-  chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DNS_LOG_FILE"
   render_router_dns_config
   touch "$DNS_ENABLED_FILE"
   physical_start_dnsmasq

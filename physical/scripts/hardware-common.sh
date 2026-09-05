@@ -135,7 +135,7 @@ r14_collect_failure_diagnostics() {
     "$HVR_REPO_DIR/lab/scripts/runtime-check.sh" 2>&1 || true
     ip -brief link; ip -o -4 address; ip -o -4 route; ip rule show
     nft list table ip hvr-nat 2>&1 || true; nft list table inet hvr-filter 2>&1 || true
-    tail -n 80 "$DNSMASQ_LOG_FILE" 2>/dev/null || true
+    tail -n 80 "$(physical_active_dnsmasq_log_file)" 2>/dev/null || true
     tail -n 80 "$IPFIX_LOG_FILE" 2>/dev/null || true
     tail -n 80 "$METRICS_EXPORT_LOG_FILE" 2>/dev/null || true
     ss -H -lunp 2>/dev/null | head -n 80 || true

@@ -37,7 +37,9 @@ convergence_signature() {
 lease_matches() {
   awk -v mac="${1,,}" -v ip="$2" 'tolower($2) == mac && $3 == ip {found=1} END {exit !found}' "$DNSMASQ_LEASE_FILE"
 }
-dns_evidence_matches() { grep -E "query\[[A-Z]+\] $DNS_TEST_NAME from $1([[:space:]]|$)" "$DNSMASQ_LOG_FILE" >/dev/null; }
+dns_evidence_matches() {
+  grep -E "query\[[A-Z]+\] $DNS_TEST_NAME from $1([[:space:]]|$)" "$(physical_active_dnsmasq_log_file)" >/dev/null
+}
 ipfix_evidence_matches() {
   [ -r "$1" ] || return 1
   python3 - "$1" "$2" "$3" <<'PY'

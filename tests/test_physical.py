@@ -707,6 +707,72 @@ systemctl() {{
         self.assertNotIn("grep", lease_health)
         self.assertNotIn("cmp", lease_health)
 
+    def test_active_physical_dnsmasq_log_tracks_stage_marker(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        helper = common[
+            common.index("physical_active_dnsmasq_log_file()"):
+            common.index("physical_dhcp_config_healthy()")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            enabled = Path(directory) / "dns-enabled"
+            dhcp_log = Path(directory) / "dhcp.log"
+            dns_log = Path(directory) / "dns.log"
+            definitions = (
+                f'DNS_ENABLED_FILE="{enabled}"; DNSMASQ_LOG_FILE="{dhcp_log}"; '
+                f'DNS_LOG_FILE="{dns_log}"; {helper}'
+            )
+            dhcp = subprocess.run(
+                ["bash", "-c", definitions + " physical_active_dnsmasq_log_file"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(dhcp.returncode, 0, dhcp.stderr)
+            self.assertEqual(dhcp.stdout.strip(), str(dhcp_log))
+            enabled.touch()
+            combined = subprocess.run(
+                ["bash", "-c", definitions + " physical_active_dnsmasq_log_file"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(combined.returncode, 0, combined.stderr)
+            self.assertEqual(combined.stdout.strip(), str(dns_log))
+
+    def test_physical_start_and_diagnostics_use_active_dnsmasq_log(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        start = common[
+            common.index("physical_start_dnsmasq()"):
+            common.index("physical_dhcp_enable()")
+        ]
+        diagnostics = common[
+            common.index("report_physical_dhcp_health()"):
+            common.index("physical_prepare_dhcp_runtime()")
+        ]
+        self.assertIn('active_log="$(physical_active_dnsmasq_log_file)"', start)
+        self.assertIn('touch "$DNSMASQ_LEASE_FILE" "$active_log"', start)
+        self.assertIn('chown "$DNSMASQ_UID:$DNSMASQ_GID" "$DNSMASQ_LEASE_FILE" "$active_log"', start)
+        self.assertNotIn('touch "$DNSMASQ_LEASE_FILE" "$DNSMASQ_LOG_FILE"', start)
+        self.assertIn('active_log="$(physical_active_dnsmasq_log_file)"', diagnostics)
+        self.assertIn('tail -n 40 "$active_log"', diagnostics)
+
+    def test_r14_dns_evidence_reads_active_combined_log(self) -> None:
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        evidence = hardware[
+            hardware.index("dns_evidence_matches()"):
+            hardware.index("ipfix_evidence_matches()")
+        ]
+        self.assertIn('"$(physical_active_dnsmasq_log_file)"', evidence)
+        self.assertNotIn("DNSMASQ_LOG_FILE", evidence)
+        with tempfile.TemporaryDirectory() as directory:
+            dhcp_log = Path(directory) / "dhcp.log"
+            dns_log = Path(directory) / "dns.log"
+            dhcp_log.write_text("old DHCP-stage log\n", encoding="utf-8")
+            dns_log.write_text("query[A] example.test from 10.0.0.163\n", encoding="utf-8")
+            command = (
+                'DNS_TEST_NAME=example.test; '
+                f'physical_active_dnsmasq_log_file(){{ echo "{dns_log}"; }}; '
+                f'{evidence} dns_evidence_matches 10.0.0.163'
+            )
+            result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_physical_dhcp_listener_uses_ipv4_kernel_socket_inode_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             proc_root = Path(directory) / "proc"
