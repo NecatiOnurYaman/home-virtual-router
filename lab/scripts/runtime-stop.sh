@@ -14,10 +14,12 @@ if [ ! -e "$RUNTIME_STATE_FILE" ]; then
 fi
 profile="$(runtime_state_field profile)" || die "malformed R12 state; refusing teardown"
 deployment="$(runtime_state_field deployment)"
+status="$(runtime_state_field status)"
 started_at="$(runtime_state_field started-at)"
 owned="$(runtime_state_field owned)"
 [ "$profile" = "$TELEMETRY_MODE" ] || die "runtime state profile $profile conflicts with configured TELEMETRY_MODE=$TELEMETRY_MODE"
 [ "$deployment" = "$DEPLOYMENT_MODE" ] || die "runtime state deployment $deployment conflicts with configured DEPLOYMENT_MODE=$DEPLOYMENT_MODE"
+[ "$status" != stopping ] || echo "Resuming the previously interrupted HVR runtime teardown."
 [ -r "$RUNTIME_CONFIG_SNAPSHOT" ] && cmp -s -- "$HVR_CONFIG" "$RUNTIME_CONFIG_SNAPSHOT" || die "configuration differs from the active runtime snapshot; restore it before safe teardown"
 runtime_write_state "$profile" stopping "$started_at" "$owned"
 while IFS= read -r stage; do
@@ -26,7 +28,14 @@ while IFS= read -r stage; do
   case "$state" in
     0) runtime_disable_stage "$stage" 2>&1 | tee -a "$RUNTIME_LOG_FILE" ;;
     1) printf 'Owned stage %s was already absent.\n' "$stage" | tee -a "$RUNTIME_LOG_FILE" ;;
-    *) die "owned stage $stage is inconsistent; refusing unsafe teardown" ;;
+    2)
+      if [ "$deployment" = physical ] && [ "$status" = stopping ] && physical_stage_teardown_resumable "$stage"; then
+        runtime_disable_stage "$stage" 2>&1 | tee -a "$RUNTIME_LOG_FILE"
+      else
+        die "owned stage $stage is inconsistent; refusing unsafe teardown"
+      fi
+      ;;
+    *) die "owned stage $stage returned an invalid state" ;;
   esac
   owned="$(runtime_remove_owned "$owned" "$stage")"
   runtime_write_state "$profile" stopping "$started_at" "$owned"

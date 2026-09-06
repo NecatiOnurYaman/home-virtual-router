@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import socket
 import subprocess
 import tempfile
 import unittest
 import stat
 import struct
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +46,13 @@ spec = importlib.util.spec_from_file_location("validate_config", VALIDATOR)
 validate_config = importlib.util.module_from_spec(spec)
 assert spec.loader
 spec.loader.exec_module(validate_config)
+
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_test_socket:
+        udp_test_socket.bind(("127.0.0.1", 0))
+    UDP_BIND_AVAILABLE = True
+except OSError:
+    UDP_BIND_AVAILABLE = False
 
 
 class ConfigTests(unittest.TestCase):
@@ -991,6 +1000,57 @@ class R8IpfixTests(unittest.TestCase):
         packet = struct.pack("!HHIII", 9, 16, 0, 0, 0)
         with self.assertRaises(receiver_module.IPFIXValidationError):
             receiver_module.IPFIXValidator().consume(packet)
+
+    @unittest.skipUnless(UDP_BIND_AVAILABLE, "sandbox does not permit a local UDP listener")
+    def test_receiver_waits_for_traffic_start_after_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ready, traffic, output = root / "ready", root / "traffic", root / "result.json"
+            process = subprocess.Popen(
+                [str(IPFIX_RECEIVER), "--bind", "127.0.0.1", "--port", "0", "--client", "10.0.0.100",
+                 "--traffic-start", str(traffic), "--output", str(output), "--ready", str(ready),
+                 "--timeout", "1"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for _ in range(100):
+                if ready.exists():
+                    break
+                self.assertIsNone(process.poll(), process.stderr.read() if process.stderr else "")
+                time.sleep(0.01)
+            self.assertTrue(ready.exists())
+            traffic.touch()
+            _stdout, stderr = process.communicate(timeout=2)
+            self.assertEqual(process.returncode, 1, stderr)
+            self.assertTrue(output.is_file())
+            self.assertFalse(ready.exists())
+
+    @unittest.skipUnless(UDP_BIND_AVAILABLE, "sandbox does not permit a local UDP listener")
+    def test_receiver_reports_missing_traffic_start(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = subprocess.run(
+                [str(IPFIX_RECEIVER), "--bind", "127.0.0.1", "--port", "0", "--client", "10.0.0.100",
+                 "--traffic-start", str(root / "missing"), "--output", str(root / "result.json"),
+                 "--ready", str(root / "ready"), "--timeout", "0.2"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("traffic-start marker did not appear before timeout", result.stderr)
+            self.assertFalse((root / "ready").exists())
+            self.assertFalse((root / "result.json").exists())
+
+    def test_receiver_initialization_failure_does_not_publish_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = subprocess.run(
+                [str(IPFIX_RECEIVER), "--bind", "invalid-bind-address", "--port", "4739",
+                 "--client", "10.0.0.100", "--traffic-start", str(root / "traffic"),
+                 "--output", str(root / "result.json"), "--ready", str(root / "ready"),
+                 "--timeout", "0.2"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((root / "ready").exists())
 
 
 class R9ObservabilityTests(unittest.TestCase):

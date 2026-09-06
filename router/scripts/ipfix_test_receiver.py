@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small structural IPFIX receiver for the isolated R8 lab test only."""
+"""Small structural IPFIX receiver for bounded HVR acceptance tests."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import ipaddress
 import json
 import socket
 import struct
+import sys
 import time
 from pathlib import Path
 
@@ -200,49 +201,76 @@ def main() -> int:
     parser.add_argument("--expect-destination")
     parser.add_argument("--expect-protocol", type=int)
     args = parser.parse_args()
+    if args.timeout <= 0:
+        parser.error("--timeout must be greater than zero")
     expected_values = (args.expect_source, args.expect_destination, args.expect_protocol)
     if any(value is not None for value in expected_values) and not all(value is not None for value in expected_values):
         parser.error("--expect-source, --expect-destination, and --expect-protocol must be used together")
 
     validator = IPFIXValidator()
     deadline = time.monotonic() + args.timeout
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
-        receiver.bind((args.bind, args.port))
-        receiver.settimeout(0.5)
-        args.ready.touch()
-        while time.monotonic() < deadline:
-            try:
-                packet, _peer = receiver.recvfrom(65535)
-            except TimeoutError:
-                continue
-            validator.consume(packet)
-            result = validator.result(
-                args.client, expected_source=args.expect_source,
-                expected_destination=args.expect_destination, expected_protocol=args.expect_protocol,
-            )
-            if (
-                args.traffic_start.exists()
-                and result["template_sets"]
-                and result["data_sets"]
-                and result["required_fields_complete"]
-                and (
-                    result.get("expected_record_seen", False)
-                    if args.expect_source is not None else result["client_source_preserved"]
-                )
-            ):
-                started_at = args.traffic_start.stat().st_mtime
-                result["receive_latency_seconds"] = round(time.time() - started_at, 3)
-                args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-                return 0
+    args.ready.unlink(missing_ok=True)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as receiver:
+            receiver.bind((args.bind, args.port))
+            receiver.settimeout(0.1)
+            args.ready.touch()
+            while not args.traffic_start.exists():
+                if time.monotonic() >= deadline:
+                    print(
+                        f"traffic-start marker did not appear before timeout: {args.traffic_start}",
+                        file=sys.stderr,
+                    )
+                    return 2
+                try:
+                    packet, _peer = receiver.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                validator.consume(packet)
 
-    result = validator.result(
-        args.client, expected_source=args.expect_source,
-        expected_destination=args.expect_destination, expected_protocol=args.expect_protocol,
-    )
-    started_at = args.traffic_start.stat().st_mtime
-    result["receive_latency_seconds"] = round(time.time() - started_at, 3)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    return 1
+            started_at = args.traffic_start.stat().st_mtime
+            receiver.setblocking(False)
+            while True:
+                try:
+                    packet, _peer = receiver.recvfrom(65535)
+                except BlockingIOError:
+                    break
+                validator.consume(packet)
+            receiver.settimeout(0.1)
+            validator.records.clear()
+            validator.data_sets = 0
+            while time.monotonic() < deadline:
+                try:
+                    packet, _peer = receiver.recvfrom(65535)
+                except TimeoutError:
+                    continue
+                validator.consume(packet)
+                result = validator.result(
+                    args.client, expected_source=args.expect_source,
+                    expected_destination=args.expect_destination, expected_protocol=args.expect_protocol,
+                )
+                if (
+                    result["template_sets"]
+                    and result["data_sets"]
+                    and result["required_fields_complete"]
+                    and (
+                        result.get("expected_record_seen", False)
+                        if args.expect_source is not None else result["client_source_preserved"]
+                    )
+                ):
+                    result["receive_latency_seconds"] = round(time.time() - started_at, 3)
+                    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+                    return 0
+
+        result = validator.result(
+            args.client, expected_source=args.expect_source,
+            expected_destination=args.expect_destination, expected_protocol=args.expect_protocol,
+        )
+        result["receive_latency_seconds"] = round(time.time() - started_at, 3)
+        args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        return 1
+    finally:
+        args.ready.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

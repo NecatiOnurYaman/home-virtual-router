@@ -1,9 +1,10 @@
-.PHONY: help check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test physical-hardware-check physical-hardware-test-start physical-hardware-test-observe-nat physical-hardware-test-observe-firewall physical-hardware-test-verify physical-hardware-test-stop physical-hardware-test-post-reboot systemd-show
+.PHONY: help check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test physical-hardware-check physical-hardware-test-start physical-hardware-test-refresh-ipfix physical-hardware-test-observe-nat physical-hardware-test-observe-firewall physical-hardware-test-verify physical-hardware-test-stop physical-hardware-test-post-reboot systemd-show
 
 help:
 	@echo "R14 deployed virtual-router validation targets (legacy target names retained):"
 	@echo "  physical-hardware-check                 read-only deployment-interface preflight"
 	@echo "  physical-hardware-test-start            start and verify repeated convergence"
+	@echo "  physical-hardware-test-refresh-ipfix    refresh only IPFIX templates after collector readiness"
 	@echo "  physical-hardware-test-observe-nat      bounded translated-source capture"
 	@echo "  physical-hardware-test-observe-firewall bounded controlled WAN-to-LAN block proof"
 	@echo "  physical-hardware-test-verify           verify client, IPFIX, metrics, and runtime evidence"
@@ -199,6 +200,10 @@ physical-hardware-check:
 physical-hardware-test-start:
 	@echo "R14 DEPLOYED ROUTER VALIDATION: this modifies the two explicitly configured pre-existing interfaces."
 	sudo physical/scripts/hardware-test.sh start
+
+physical-hardware-test-refresh-ipfix:
+	@echo "R14 IPFIX template refresh: restart only the physical IPFIX stage after the collector is ready."
+	sudo physical/scripts/hardware-test.sh refresh-ipfix
 
 physical-hardware-test-observe-nat:
 	@echo "R14 NAT observation: generate the documented client traffic during this bounded capture."

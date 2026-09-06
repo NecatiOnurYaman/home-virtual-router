@@ -5,7 +5,7 @@ r14_repo_dir="$(cd "$r14_script_dir/../.." && pwd)"
 # shellcheck source=hardware-common.sh
 source "$r14_script_dir/hardware-common.sh"
 
-usage() { echo "usage: $0 start | observe-nat --client-ip IP --target IP | observe-firewall --client-ip IP --upstream-peer IP | verify --client-mac MAC --client-ip IP --target IP --ipfix-result FILE | stop" >&2; exit 2; }
+usage() { echo "usage: $0 start | refresh-ipfix | observe-nat --client-ip IP --target IP | observe-firewall --client-ip IP --upstream-peer IP | verify --client-mac MAC --client-ip IP --target IP --ipfix-result FILE | stop" >&2; exit 2; }
 argument() {
   local wanted="$1"; shift
   while [ "$#" -gt 0 ]; do
@@ -53,6 +53,22 @@ assert result.get("expected_record_seen") is True and record
 assert record.get("sourceIPv4Address") == sys.argv[2]
 assert record.get("destinationIPv4Address") == sys.argv[3]
 assert record.get("protocolIdentifier") == 1
+PY
+}
+validate_ipfix_evidence_input() {
+  local result="$1"
+  [ -e "$result" ] || die "R14 IPFIX evidence file does not exist: $result"
+  [ -f "$result" ] || die "R14 IPFIX evidence is not a regular file: $result"
+  [ -r "$result" ] || die "R14 IPFIX evidence file is not readable: $result"
+  python3 - "$result" <<'PY' || die "R14 IPFIX evidence JSON is malformed or structurally incomplete: $result"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    value = json.load(stream)
+assert isinstance(value, dict)
+for key in ("required_fields_complete", "client_source_preserved", "expected_record_seen"):
+    assert type(value.get(key)) is bool
+record = value.get("expected_record")
+assert record is None or isinstance(record, dict)
 PY
 }
 metrics_increased() {
@@ -126,6 +142,7 @@ verify_test() {
   mac="$(argument --client-mac "$@")" || usage; client="$(argument --client-ip "$@")" || usage
   target="$(argument --target "$@")" || usage; result="$(argument --ipfix-result "$@")" || usage
   valid_mac "$mac" && valid_ipv4 "$client" && valid_ipv4 "$target" || die "explicit client MAC/client IPv4/target IPv4 are required"
+  validate_ipfix_evidence_input "$result"
   [ -r "$R14_CHECKPOINT" ] && r14_checkpoint_identity_matches || die "R14 checkpoint/interface identity mismatch"
   wan_address="$(physical_effective_wan_address)" || die "current effective WAN address is unavailable"
   "$r14_repo_dir/lab/scripts/runtime-check.sh"; "$r14_repo_dir/lab/scripts/show-metrics.sh" > "$after"
@@ -138,6 +155,16 @@ verify_test() {
   r14_check "Runtime status/check" "$r14_repo_dir/lab/scripts/runtime-check.sh"
   for label in "Observability integration" "Hardware reboot validation" "Link-loss validation"; do r14_result "$label" "NOT RUN"; done
   echo "R14 core verification evidence passed; stop and restoration checks remain required."
+}
+
+refresh_ipfix() {
+  [ -r "$R14_CHECKPOINT" ] && r14_checkpoint_identity_matches || die "R14 checkpoint/interface identity mismatch"
+  "$r14_repo_dir/lab/scripts/runtime-check.sh"
+  "$r14_script_dir/physical-stage.sh" ipfix disable
+  "$r14_script_dir/physical-stage.sh" ipfix enable
+  pmacctd_running && assert_single_project_pmacct_pair >/dev/null ||
+    die "physical IPFIX stage did not become healthy after template refresh"
+  echo "R14 physical IPFIX stage refreshed; signal traffic-start and generate fresh client traffic now."
 }
 
 stop_test() {
@@ -180,6 +207,7 @@ case "${1:-}" in
   start) shift; [ "$#" -eq 0 ] || usage; start_test ;;
   observe-nat) shift; observe_nat "$@" ;;
   observe-firewall) shift; observe_firewall "$@" ;;
+  refresh-ipfix) shift; [ "$#" -eq 0 ] || usage; refresh_ipfix ;;
   verify) shift; verify_test "$@" ;;
   stop) shift; [ "$#" -eq 0 ] || usage; stop_test ;;
   *) usage ;;

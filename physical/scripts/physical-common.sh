@@ -31,6 +31,7 @@ readonly PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE="$PHYSICAL_WAN_DHCP_DIR/dhclient.s
 readonly PHYSICAL_WAN_DHCLIENT_LEASE_FILE="$PHYSICAL_WAN_DHCP_DIR/dhclient.leases"
 readonly PHYSICAL_WAN_DHCLIENT_HOOK="$PHYSICAL_WAN_DHCP_DIR/dhclient-hook"
 readonly PHYSICAL_WAN_DHCLIENT_LOG="$PHYSICAL_WAN_DHCP_DIR/dhclient.log"
+readonly PHYSICAL_WAN_DHCLIENT_HOOK_LOG="$PHYSICAL_WAN_DHCP_DIR/dhclient-hook.log"
 readonly PHYSICAL_WAN_DHCP_STATE="$PHYSICAL_WAN_DHCP_DIR/state.env"
 readonly PHYSICAL_WAN_DHCP_INTERFACE_FILE="$PHYSICAL_WAN_DHCP_DIR/interface"
 
@@ -349,6 +350,11 @@ physical_prepare_wan_dhcp_runtime() {
   chmod 0600 "$PHYSICAL_WAN_DHCP_INTERFACE_FILE"
 }
 
+physical_wan_dhcp_runtime_owned() {
+  [ -d "$PHYSICAL_WAN_DHCP_DIR" ] && [ ! -L "$PHYSICAL_WAN_DHCP_DIR" ] &&
+    [ "$(stat -c %u:%g:%a "$PHYSICAL_WAN_DHCP_DIR" 2>/dev/null)" = 0:0:700 ]
+}
+
 physical_start_wan_dhcp() {
   local pid starttime identity_ready=0 attempt
   physical_wan_dhclient_matches && return 0
@@ -376,20 +382,40 @@ physical_start_wan_dhcp() {
 }
 
 physical_stop_wan_dhcp() {
-  local pid address prefix gateway attempt
-  physical_wan_dhclient_matches || die "physical WAN dhclient identity is inconsistent; refusing process termination"
-  pid="$(cat "$PHYSICAL_WAN_DHCLIENT_PID_FILE")"
-  address="$(physical_effective_wan_address)"; prefix="$(physical_effective_wan_prefix)"; gateway="$(physical_effective_wan_gateway)"
-  kill -TERM "$pid"
-  for ((attempt=0; attempt<50; attempt++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
-  ! kill -0 "$pid" 2>/dev/null || die "owned physical WAN dhclient did not terminate"
-  ip route del default via "$gateway" dev "$PHYSICAL_WAN_INTERFACE" 2>/dev/null || true
-  ip address del "$address/$prefix" dev "$PHYSICAL_WAN_INTERFACE" 2>/dev/null || true
-  rm -f -- "$PHYSICAL_WAN_DHCLIENT_BINARY" "$PHYSICAL_WAN_DHCLIENT_PID_FILE" \
-    "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE" "$PHYSICAL_WAN_DHCLIENT_LEASE_FILE" \
-    "$PHYSICAL_WAN_DHCLIENT_HOOK" "$PHYSICAL_WAN_DHCLIENT_LOG" \
-    "$PHYSICAL_WAN_DHCP_STATE" "$PHYSICAL_WAN_DHCP_INTERFACE_FILE"
-  rmdir "$PHYSICAL_WAN_DHCP_DIR"
+  local pid="" address="" prefix="" gateway="" attempt artifact unexpected
+  [ -e "$PHYSICAL_WAN_DHCP_DIR" ] || return 0
+  physical_wan_dhcp_runtime_owned || die "physical WAN DHCP runtime directory ownership is inconsistent: $PHYSICAL_WAN_DHCP_DIR"
+  if physical_wan_dhcp_state_valid; then
+    address="$(physical_effective_wan_address)"
+    prefix="$(physical_effective_wan_prefix)"
+    gateway="$(physical_effective_wan_gateway)"
+  fi
+  if physical_wan_dhclient_matches; then
+    pid="$(cat "$PHYSICAL_WAN_DHCLIENT_PID_FILE")"
+    kill -TERM "$pid"
+    for ((attempt=0; attempt<50; attempt++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    ! kill -0 "$pid" 2>/dev/null || die "owned physical WAN dhclient did not terminate"
+  elif pid="$(cat "$PHYSICAL_WAN_DHCLIENT_PID_FILE" 2>/dev/null)" && [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null; then
+    die "physical WAN dhclient identity is inconsistent; refusing process termination"
+  fi
+  [ -z "$gateway" ] || ip route del default via "$gateway" dev "$PHYSICAL_WAN_INTERFACE" 2>/dev/null || true
+  [ -z "$address" ] || ip address del "$address/$prefix" dev "$PHYSICAL_WAN_INTERFACE" 2>/dev/null || true
+  for ((attempt=0; attempt<10; attempt++)); do
+    rm -f -- "$PHYSICAL_WAN_DHCLIENT_BINARY" "$PHYSICAL_WAN_DHCLIENT_PID_FILE" \
+      "$PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE" "$PHYSICAL_WAN_DHCLIENT_LEASE_FILE" \
+      "$PHYSICAL_WAN_DHCLIENT_HOOK" "$PHYSICAL_WAN_DHCLIENT_LOG" "$PHYSICAL_WAN_DHCLIENT_HOOK_LOG" \
+      "$PHYSICAL_WAN_DHCP_STATE" "$PHYSICAL_WAN_DHCP_INTERFACE_FILE"
+    for artifact in "$PHYSICAL_WAN_DHCP_DIR"/state.env.*; do
+      [ -e "$artifact" ] || [ -L "$artifact" ] || continue
+      [ -f "$artifact" ] && [ ! -L "$artifact" ] && [ "$(stat -c %u "$artifact" 2>/dev/null)" = 0 ] ||
+        die "unexpected unsafe physical WAN DHCP shutdown artifact: $artifact"
+      rm -f -- "$artifact"
+    done
+    rmdir "$PHYSICAL_WAN_DHCP_DIR" 2>/dev/null && return 0
+    sleep 0.1
+  done
+  unexpected="$(find "$PHYSICAL_WAN_DHCP_DIR" -mindepth 1 -maxdepth 1 -print 2>/dev/null | sort)"
+  die "unexpected physical WAN DHCP runtime artifact remains: ${unexpected:-$PHYSICAL_WAN_DHCP_DIR}"
 }
 
 physical_preflight() {
@@ -440,6 +466,14 @@ physical_topology_healthy() {
 
 physical_topology_absent() {
   [ ! -e "$PHYSICAL_MAP_FILE" ] && [ ! -e "$PHYSICAL_WAN_DHCP_DIR" ] && physical_preflight >/dev/null
+}
+
+physical_stage_teardown_resumable() {
+  case "$1" in
+    topology) [ -r "$PHYSICAL_MAP_FILE" ] && physical_map_matches_live_config ;;
+    routing) [ -r "$PHYSICAL_FORWARDING_ORIGINAL" ] ;;
+    *) return 1 ;;
+  esac
 }
 
 physical_topology_enable() {

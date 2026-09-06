@@ -66,7 +66,15 @@ Start core acceptance from a local console and a residue-free runtime:
 sudo make physical-hardware-test-start
 ```
 
-Pause here. Connect the external downstream client, renew DHCP, and record its leased IPv4 address and MAC. Confirm its prefix, default gateway, and DNS server; query HVR directly for the deterministic and upstream DNS names; then generate ICMP toward a controlled upstream IPv4 target. Start the IPFIX decoder before generating the fresh marked ICMP flow and retain its JSON result on the HVR host.
+Pause here. Connect the external downstream client, renew DHCP, and record its leased IPv4 address and MAC. Confirm its prefix, default gateway, and DNS server; query HVR directly for the deterministic and upstream DNS names; then generate ICMP toward a controlled upstream IPv4 target.
+
+For IPFIX, start the decoder on the collector first and wait for its ready marker. A late collector does not have pmacct/nfprobe's earlier templates, and the supported pmacct configuration used by HVR has no reliable bounded template re-export interval. After the receiver is ready, run this on the router to restart only the physical IPFIX stage and force fresh templates:
+
+```sh
+sudo make physical-hardware-test-refresh-ipfix
+```
+
+This operation does not restart or alter DHCP, DNS, NAT, firewall, metrics, topology, routing, the WAN DHCP client, or the R14 checkpoint. After it succeeds, signal the receiver's `--traffic-start` marker and generate the fresh client traffic. Wait for the decoder to finish and validate its JSON before continuing.
 
 Set local shell placeholders without committing them:
 
@@ -94,7 +102,7 @@ sudo make physical-hardware-test-observe-firewall \
   R14_UPSTREAM_PEER="$R14_UPSTREAM_PEER"
 ```
 
-Do not continue unless the probe was observed on WAN and absent on LAN. With the real decoder JSON now present, verify all accumulated evidence:
+Do not continue unless the probe was observed on WAN and absent on LAN. With the real decoder JSON now present as a regular readable file local to the Ubuntu router, verify all accumulated evidence:
 
 ```sh
 sudo make physical-hardware-test-verify \
@@ -104,7 +112,9 @@ sudo make physical-hardware-test-verify \
   R14_IPFIX_RESULT="$R14_IPFIX_RESULT"
 ```
 
-Only after verification, stop the runtime and verify restoration:
+An external collector path is not shared with the router. For example, `/tmp/hvr-r14-ipfix/result.json` on macOS is not visible at the same path inside the Ubuntu VM; copy the completed JSON to the router and set `R14_IPFIX_RESULT` to that router-local path. Missing, malformed, or structurally incomplete evidence is rejected before any verification checks or live probes begin.
+
+Only after verification passes, stop the runtime and verify restoration:
 
 ```sh
 sudo make physical-hardware-test-stop
@@ -174,7 +184,9 @@ sudo make physical-hardware-test-observe-firewall \
 
 The probe must be observed on WAN and absent on LAN. Random Internet scans are not acceptable.
 
-IPFIX must use the configured real collector. Start the existing R8 decoder there before generating the fresh client flow, with expected client source, destination, and protocol, and retain its JSON result locally on the HVR host. This is not a synthetic sender: pmacct/nfprobe must export the real LAN flow. Then verify all router-side evidence:
+IPFIX must use the configured real collector. Start the existing R8 decoder with expected client source, destination, and protocol. Wait for its ready marker, run `sudo make physical-hardware-test-refresh-ipfix` on the router so the late collector receives templates, signal `--traffic-start`, and only then generate the fresh client flow. Wait for the result and validate the JSON. This is not a synthetic sender: pmacct/nfprobe must export the real LAN flow.
+
+On macOS with UTM, one tested arrangement could see UDP/4739 in `tcpdump` but did not deliver it to a normal userspace socket bound specifically to the bridge address `192.168.64.1`; binding the collector to `0.0.0.0:4739` worked. Treat wildcard binding as a portability recommendation for this setup, not a universal networking rule, and apply an appropriate host firewall policy. If the collector is external, copy the completed JSON to the Ubuntu router. The verifier requires a router-local path; a macOS `/tmp` path is not magically visible in the VM. Then verify all router-side evidence:
 
 ```sh
 sudo make physical-hardware-test-verify \
@@ -192,7 +204,9 @@ Stop and verify restoration:
 sudo make physical-hardware-test-stop
 ```
 
-This uses `runtime-stop`, then requires forwarding and default routes to match the checkpoint, configured address presence to match baseline, HVR nftables to be absent, and all runtime/physical/IPFIX/metrics ownership state to be absent. It does not delete `/etc/home-virtual-router` configuration.
+This uses `runtime-stop`, then requires forwarding and default routes to match the checkpoint, configured address presence to match baseline, HVR nftables to be absent, and all runtime/physical/IPFIX/metrics ownership state to be absent. It does not delete `/etc/home-virtual-router` configuration. If teardown is interrupted, rerun `sudo make physical-hardware-test-stop`; a recorded `stopping` runtime resumes from its remaining owned stages. The R14 checkpoint and default-route snapshot are retained until complete restoration succeeds.
+
+Metrics-export runtime health currently proves exact process identity and configuration, not successful delivery of every HTTP sample. Transient and repeated delivery failures remain logged in `/run/home-virtual-router/metrics-export/exporter.log` without stopping routing. Adding bounded success/failure health state would change the R11/R12 telemetry contract and is intentionally deferred to a separate focused change.
 
 ## Extended acceptance
 

@@ -225,11 +225,97 @@ physical_default_route_exact(){ [ "${ROUTE_HEALTH:-1}" = 1 ]; }
         self.assertIn("physical_wan_dhclient_matches && return 0", start)
         self.assertIn("attempt<300", start)
         self.assertIn("physical_wan_dhcp_state_valid", start)
-        self.assertIn("physical_wan_dhclient_matches || die", stop)
+        self.assertIn("if physical_wan_dhclient_matches", stop)
         self.assertIn('kill -TERM "$pid"', stop)
+        self.assertIn('kill -0 "$pid"', stop)
         self.assertIn('ip route del default via "$gateway"', stop)
         self.assertIn('ip address del "$address/$prefix"', stop)
+        self.assertIn("PHYSICAL_WAN_DHCLIENT_HOOK_LOG", stop)
+        self.assertIn('"$PHYSICAL_WAN_DHCP_DIR"/state.env.*', stop)
+        self.assertIn("unexpected physical WAN DHCP runtime artifact remains", stop)
         self.assertNotIn("pkill", stop)
+
+    def test_wan_dhcp_shutdown_artifacts_are_removed_idempotently(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        stop = common[common.index("physical_stop_wan_dhcp()") : common.index("physical_preflight()")]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "wan-dhcp"
+            root.mkdir()
+            paths = {
+                "PHYSICAL_WAN_DHCLIENT_BINARY": root / "dhclient",
+                "PHYSICAL_WAN_DHCLIENT_PID_FILE": root / "dhclient.pid",
+                "PHYSICAL_WAN_DHCLIENT_STARTTIME_FILE": root / "dhclient.starttime",
+                "PHYSICAL_WAN_DHCLIENT_LEASE_FILE": root / "dhclient.leases",
+                "PHYSICAL_WAN_DHCLIENT_HOOK": root / "dhclient-hook",
+                "PHYSICAL_WAN_DHCLIENT_LOG": root / "dhclient.log",
+                "PHYSICAL_WAN_DHCLIENT_HOOK_LOG": root / "dhclient-hook.log",
+                "PHYSICAL_WAN_DHCP_STATE": root / "state.env",
+                "PHYSICAL_WAN_DHCP_INTERFACE_FILE": root / "interface",
+            }
+            for path in paths.values():
+                path.touch()
+            (root / "state.env.ABC123").touch()
+            definitions = "; ".join(f'{key}="{value}"' for key, value in paths.items())
+            definitions += f'; PHYSICAL_WAN_DHCP_DIR="{root}"; PHYSICAL_WAN_INTERFACE=wan0; '
+            definitions += "physical_wan_dhcp_runtime_owned(){ return 0; }; physical_wan_dhcp_state_valid(){ return 1; }; physical_wan_dhclient_matches(){ return 1; }; ip(){ :; }; sleep(){ :; }; "
+            command = definitions + stop + " physical_stop_wan_dhcp; physical_stop_wan_dhcp"
+            result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(root.exists())
+
+    def test_interrupted_stop_is_resumable_and_checkpoint_is_consumed_last(self) -> None:
+        runtime_stop = (ROOT / "lab/scripts/runtime-stop.sh").read_text(encoding="utf-8")
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        self.assertIn('status="$(runtime_state_field status)"', runtime_stop)
+        self.assertIn('[ "$status" = stopping ]', runtime_stop)
+        self.assertIn('physical_stage_teardown_resumable "$stage"', runtime_stop)
+        checkpoint_remove = hardware.index('rm -f -- "$R14_CHECKPOINT" "$R14_DEFAULT_ROUTES_BEFORE"')
+        for proof in ("Forwarding restoration", "Default-route restoration", "WAN link restoration", "Residue"):
+            self.assertLess(hardware.index(proof, hardware.index("stop_test()")), checkpoint_remove)
+
+    def test_r14_ipfix_refresh_is_stage_local(self) -> None:
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        refresh = hardware[hardware.index("refresh_ipfix()") : hardware.index("stop_test()")]
+        self.assertIn('physical-stage.sh" ipfix disable', refresh)
+        self.assertIn('physical-stage.sh" ipfix enable', refresh)
+        for stage in ("dhcp", "dns", "nat", "firewall", "metrics-export", "topology", "routing"):
+            self.assertNotIn(f'physical-stage.sh" {stage}', refresh)
+        self.assertNotIn("runtime-restart", refresh)
+
+    def test_r14_ipfix_evidence_preflight_distinguishes_negative_evidence(self) -> None:
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        validation = hardware[hardware.index("validate_ipfix_evidence_input()") : hardware.index("metrics_increased()")]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cases = {
+                "missing": (root / "missing.json", False),
+                "malformed": (root / "malformed.json", False),
+                "incomplete": (root / "incomplete.json", False),
+                "negative": (root / "negative.json", True),
+                "positive": (root / "positive.json", True),
+            }
+            cases["malformed"][0].write_text("{", encoding="utf-8")
+            cases["incomplete"][0].write_text("{}", encoding="utf-8")
+            cases["negative"][0].write_text(
+                '{"required_fields_complete": false, "client_source_preserved": false, '
+                '"expected_record_seen": false, "expected_record": null}', encoding="utf-8",
+            )
+            cases["positive"][0].write_text(
+                '{"required_fields_complete": true, "client_source_preserved": true, '
+                '"expected_record_seen": true, "expected_record": {}}', encoding="utf-8",
+            )
+            for label, (path, expected) in cases.items():
+                with self.subTest(label=label):
+                    command = f'die(){{ echo "$*" >&2; return 1; }}; {validation} validate_ipfix_evidence_input "{path}"'
+                    result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode == 0, expected, result.stderr)
+            negative_check = (
+                f'{validation} {hardware[hardware.index("ipfix_evidence_matches()") : hardware.index("validate_ipfix_evidence_input()")]} '
+                f'validate_ipfix_evidence_input "{cases["negative"][0]}" && '
+                f'ipfix_evidence_matches "{cases["negative"][0]}" 10.0.0.163 9.9.9.9'
+            )
+            result = subprocess.run(["bash", "-c", negative_check], capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
 
     def test_deployment_eligibility_is_ethernet_and_driver_bus_independent(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
