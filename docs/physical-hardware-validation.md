@@ -4,6 +4,19 @@ R14 validates the accepted physical runtime on an Ubuntu router host with two ex
 
 R14 has two levels. Core acceptance requires deployment-interface preflight, start, external-client DHCP/DNS/routing, observed NAT, controlled unsolicited-WAN blocking, decoded IPFIX, metrics movement, repeated start, runtime health, stop, restoration, and residue checks. Extended acceptance separately covers optional HNOP delivery, post-reboot inspection, link loss, and safe configuration drift. Persistent background operation belongs to R15. `NOT RUN` is not `PASS`.
 
+## R14 quick-start checklist
+
+1. **Preflight:** confirm the working tree is clean and at the expected commit; prepare the root-owned `/etc/home-virtual-router/router.env` and authorization marker; set `DEPLOYMENT_MODE=physical`; verify the explicit WAN/LAN names; make both dedicated interfaces deliberately unmanaged; ensure neither has conflicting global IPv4/default-route state; and confirm there is no stale R14 checkpoint unless intentionally resuming a failed stop. Run `sudo make physical-hardware-check`.
+2. **Start:** from a local console, run `sudo make physical-hardware-test-start`.
+3. **Client proof:** pause for the external LAN client to obtain its HVR DHCP lease, default route and DNS server; prove DNS through HVR and external reachability.
+4. **NAT/firewall proof:** run the documented `physical-hardware-test-observe-nat` and `physical-hardware-test-observe-firewall` targets with explicit endpoints. Add a narrow controlled-upstream route only when the firewall proof requires it, and remove that temporary host-owned route afterward.
+5. **IPFIX proof:** start the external collector first, wait for receiver readiness, run `sudo make physical-hardware-test-refresh-ipfix`, signal `--traffic-start`, and generate fresh client traffic. Validate the resulting JSON and copy it to the router when collection ran externally.
+6. **Verify:** run `sudo make physical-hardware-test-verify` with the documented client MAC, client IP, target IP, and router-local result path. Do not stop until verification passes.
+7. **Stop:** run `sudo make physical-hardware-test-stop`. If it reports an interrupted `stopping` state, rerun the same target rather than deleting ownership evidence.
+8. **Confirm restoration:** verify original forwarding and WAN/LAN link state, pre-test address/default-route state, and absence of HVR-owned processes, addresses, routes, nftables objects, WAN-DHCP state, and the restoration checkpoint.
+
+R14 proves a manual, bounded real deployment and its safe restoration. R15—not R14—owns persistent background router operation, boot/service lifecycle, and automatic startup/restart. R14 does not install or enable systemd services.
+
 ## Supported UTM topology
 
 The intended deployment is an Ubuntu UTM guest acting as the router. One UTM-supplied Ethernet interface provides WAN/upstream connectivity and a second UTM-supplied Ethernet interface connects to an isolated, host-only, shared, or custom downstream segment appropriate to the operator's UTM version. HVR runs in the Ubuntu host network context: DHCP/DNS bind to LAN, NAT and the stateful firewall forward between LAN and WAN, IPFIX captures the LAN client pre-NAT, and metrics retain semantic `lan` and `wan` roles.
@@ -230,6 +243,69 @@ sudo make physical-check
 ```
 
 Do not flush nftables, flush NIC addresses, or stop a network manager globally. On failure inspect the bounded `/run/home-virtual-router/r14/report.txt`, runtime logs, and physical ownership markers. It captures HVR tables, addresses/routes/rules, bounded daemon log tails, interface identity, and relevant sockets—not credentials, arbitrary files, full system logs, or complete packet captures.
+
+### Runtime stuck in `stopping`
+
+`Recorded status: stopping` means a teardown was interrupted or failed after some HVR-owned stages were already removed. The restoration checkpoint is deliberately retained so current code can verify identity and continue safely. Do not delete `checkpoint.env`, remove HVR addresses/routes manually, or discard runtime ownership files before attempting supported recovery. Rerun:
+
+```sh
+sudo make physical-hardware-test-stop
+```
+
+The resumed stop proceeds only from verified HVR-owned state. If it still refuses, capture the following diagnostics before changing host state:
+
+```sh
+sudo make runtime-status
+ip -o -4 address
+ip -o -4 route
+sudo nft list tables
+ps -ef | grep -E '[d]hclient|[d]nsmasq|[p]macctd|router-metrics'
+sudo ls -la /var/lib/home-virtual-router/r14
+sudo find /run/home-virtual-router/physical/wan-dhcp -maxdepth 1 -printf '%f %y %u %g %m\n'
+```
+
+Docker-owned nftables tables are legitimate host state. Only HVR-owned tables and rules must disappear during HVR restoration; never flush the host ruleset to make a residue check pass.
+
+The WAN-DHCP teardown fixed in `397bd12` explains one prior partial-stop case: stopping dhclient invokes HVR's hook, which can append `dhclient-hook.log` and briefly create an atomic `state.env.*` file. Older cleanup attempted `rmdir` before accounting for those shutdown artifacts. Current cleanup is allowlisted, directory/file-ownership checked, race-aware, and resumable; unexpected entries are reported by exact path instead of being deleted broadly.
+
+### Offline canonical commit transfer with `git bundle`
+
+The Ubuntu router can have working IP connectivity while DNS resolution for `github.com` is unavailable. If the Mac repository's checked-out `HEAD` is the exact canonical commit to transfer, bundle that commit and all history reachable from it without rewriting either repository.
+
+On macOS:
+
+```sh
+cd /path/to/home-virtual-router
+git status --short
+git rev-parse HEAD
+git bundle create /tmp/home-virtual-router.bundle HEAD
+git bundle verify /tmp/home-virtual-router.bundle
+scp /tmp/home-virtual-router.bundle user@ROUTER_IP:/tmp/
+```
+
+On Ubuntu, first require a clean working tree, verify the bundle, fetch its advertised `HEAD`, and fast-forward only:
+
+```sh
+cd ~/home-virtual-router
+git status --short
+git bundle verify /tmp/home-virtual-router.bundle
+git fetch /tmp/home-virtual-router.bundle HEAD
+git merge --ff-only FETCH_HEAD
+git rev-parse HEAD
+```
+
+`git bundle create ... HEAD` is intentional: it advertises the exact checked-out commit and records its complete reachable history. Check both `git rev-parse HEAD` outputs against the expected canonical commit. Do not use a destructive reset as the normal transfer workflow; `--ff-only` preserves local history and refuses divergence. Because this fetch reads a local bundle rather than GitHub, `origin/main` may remain stale even though the Ubuntu working tree is at the newer commit. The remote-tracking ref updates only after a successful fetch from `origin` (or an explicit, deliberate ref update).
+
+### Troubleshooting matrix
+
+| Symptom | Likely cause | Operator action |
+|---|---|---|
+| `Could not resolve host: github.com` | Router DNS/upstream resolution issue | Restore router DNS, or transfer the exact canonical history from the Mac using the bundle workflow above. |
+| IPFIX `data_sets > 0` but `templates = 0` | Collector joined after nfprobe emitted its templates | Start the receiver first, wait for readiness, then run `sudo make physical-hardware-test-refresh-ipfix`. |
+| IPFIX result is missing on the router | Collector ran externally or its copy/SCP did not complete | Finish copying the JSON to the router and validate that local file before `physical-hardware-test-verify`. |
+| Runtime status is `stopping` | Teardown was interrupted after removing some stages | Rerun `sudo make physical-hardware-test-stop`; do not delete the restoration checkpoint. |
+| Docker nftables tables remain after HVR stop | Normal Docker-owned host state | Require only HVR-owned nftables objects to disappear. Do not flush Docker or the host ruleset. |
+| Metrics exporter logs timeouts while its process is healthy | Metrics delivery endpoint is unavailable or unreachable | Inspect `/run/home-virtual-router/metrics-export/exporter.log`; current health tracks process/config identity, not delivery success. |
 
 After stop, residue can be checked explicitly:
 

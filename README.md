@@ -4,7 +4,7 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository includes **Stage R14: virtual-router deployment validation infrastructure**. R13 maps the proven semantic WAN/LAN roles to explicitly configured pre-existing host interfaces; R14 adds an opt-in, phased deployment-interface/external-client acceptance workflow. The intended target is an Ubuntu UTM VM with two externally supplied network interfaces, including VirtIO. R14 implementation is complete, but two-vNIC UTM acceptance remains pending. Router management, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
+The repository includes **Stage R14: virtual-router deployment validation infrastructure**. R13 maps the proven semantic WAN/LAN roles to explicitly configured pre-existing host interfaces; R14 adds an opt-in, phased deployment-interface/external-client acceptance workflow. The intended target is an Ubuntu UTM VM with two externally supplied network interfaces, including VirtIO, and this two-interface DHCP-WAN deployment has been validated. Router management, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
 
 The deployment roadmap is R12 runtime and deployment hardening, R13 host-interface deployment, R14 virtual-router deployment validation, R15 persistent background router operation, and R16 deployment polish/production hardening. The existing `DEPLOYMENT_MODE=physical`, `PHYSICAL_*`, `physical/*`, and `physical-hardware-*` names are compatibility terminology: “physical” means host-context operation against explicit pre-existing interfaces and does not require bare-metal NICs.
 
@@ -48,7 +48,13 @@ For the complete runtime, use `make runtime-start`, `runtime-status`, `runtime-c
 
 The tracked default remains `DEPLOYMENT_MODE=lab`. Physical mode is selected only by a complete, root-owned `/etc/home-virtual-router/router.env` based on `config/physical.example.env`, plus the separately created `/etc/home-virtual-router/allow-physical-deployment` authorization marker. Its WAN may be legacy static IPv4 or an HVR-owned ordinary IPv4 DHCP lease from an upstream consumer/ISP CPE; double NAT is intentionally supported without requiring DMZ or bridge mode. Run `sudo make physical-check` before any physical start. Never first deploy over SSH on a configured WAN/LAN NIC unless losing that session is deliberate and the exact interface acknowledgement is set. See `docs/physical-deployment.md`.
 
-R14 deployment acceptance begins with `sudo make physical-hardware-check`, then uses explicit start, bounded NAT/firewall observation, evidence verification, and stop/restoration phases. It never guesses interfaces, reboots, enables systemd, or reconfigures a network manager. Use a local console and an external downstream client outside the R2 topology; that client may be another VM, a host-connected virtual network participant, or a physical machine. See `docs/physical-hardware-validation.md` before running any mutating target.
+## Physical deployment / R14
+
+R14 is a bounded, operator-driven acceptance lifecycle for a real host-context deployment; it is not permanent router operation and does not install or enable a systemd service. R15 owns persistent background operation, boot startup, and service restart policy.
+
+Physical mode requires two explicitly prepared, dedicated WAN/LAN interfaces that NetworkManager or systemd-networkd does not manage during the test. The WAN can use a static address or an HVR-owned ordinary upstream DHCP lease. DHCP WAN works behind a normal consumer/ISP router: DMZ, bridge, and passthrough modes are not required, and double NAT is a supported baseline.
+
+Acceptance begins with `sudo make physical-hardware-check`, then uses explicit start, external-client proof, bounded NAT/firewall observation, IPFIX evidence refresh/capture, verification, and stop/restoration phases. IPFIX and metrics are optional components of runtime profiles, but when enabled they are required R14 acceptance evidence. R14 never guesses interfaces, reboots, enables systemd, or reconfigures a network manager. Use a local console and an external downstream client outside the R2 topology. Follow the exact checklist and commands in [`docs/physical-hardware-validation.md`](docs/physical-hardware-validation.md) before running any mutating target.
 
 ## Observability integration
 
