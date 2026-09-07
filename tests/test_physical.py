@@ -265,6 +265,7 @@ physical_default_route_exact(){ [ "${ROUTE_HEALTH:-1}" = 1 ]; }
 
     def test_interrupted_stop_is_resumable_and_checkpoint_is_consumed_last(self) -> None:
         runtime_stop = (ROOT / "lab/scripts/runtime-stop.sh").read_text(encoding="utf-8")
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
         hardware = HARDWARE_TEST.read_text(encoding="utf-8")
         self.assertIn('status="$(runtime_state_field status)"', runtime_stop)
         self.assertIn('[ "$status" = stopping ]', runtime_stop)
@@ -272,6 +273,69 @@ physical_default_route_exact(){ [ "${ROUTE_HEALTH:-1}" = 1 ]; }
         checkpoint_remove = hardware.index('rm -f -- "$R14_CHECKPOINT" "$R14_DEFAULT_ROUTES_BEFORE"')
         for proof in ("Forwarding restoration", "Default-route restoration", "WAN link restoration", "Residue"):
             self.assertLess(hardware.index(proof, hardware.index("stop_test()")), checkpoint_remove)
+        stop = hardware[hardware.index("stop_test()") : hardware.index("trap 'status=$?")]
+        self.assertLess(stop.index("r14_prepare_report"), stop.index("r14_summary_latest_is_pass"))
+        self.assertIn("r14_restore_networkmanager_baseline", stop)
+        self.assertIn("r14_wait_for_checkpoint_network_baseline", stop)
+        self.assertIn('r14_prepare_report\n  printf', common[common.index("r14_result()") : common.index("r14_check()")])
+
+    def test_runtime_cleanup_cannot_remove_r14_controller_state(self) -> None:
+        runtime_stop = (ROOT / "lab/scripts/runtime-stop.sh").read_text(encoding="utf-8")
+        physical = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        self.assertNotIn("R14_DIR", runtime_stop + physical)
+        self.assertNotIn("/run/home-virtual-router/r14", runtime_stop + physical)
+        self.assertNotIn('rmdir "/run/home-virtual-router"', runtime_stop + physical)
+
+    def test_r14_checkpoint_tracks_and_restores_networkmanager_baseline(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        checkpoint = common[common.index("r14_write_checkpoint()") : common.index("r14_checkpoint_field()")]
+        restore = common[common.index("r14_restore_networkmanager_baseline()") : common.index("r14_runtime_residue_absent()")]
+        self.assertIn("WAN_NM_STATE", checkpoint)
+        self.assertIn("LAN_NM_STATE", checkpoint)
+        self.assertIn('nmcli device set "$interface" managed no', restore)
+        self.assertNotIn("nmcli connection", restore)
+        self.assertNotIn("managed yes", restore)
+        self.assertIn("r14_checkpoint_network_baseline_matches", restore)
+        self.assertIn("R14_VERSION=3", common)
+        self.assertIn('version in {"2", "3"}', common)
+
+    def test_networkmanager_restoration_is_exact_and_unmanaged_is_unchanged(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        restore = common[
+            common.index("r14_restore_networkmanager_baseline()"):
+            common.index("r14_checkpoint_network_baseline_matches()")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            changed, calls = root / "changed", root / "calls"
+            command = f'''
+PHYSICAL_WAN_INTERFACE=wan0
+PHYSICAL_LAN_INTERFACE=lan0
+r14_checkpoint_networkmanager_state(){{ echo unmanaged; }}
+r14_networkmanager_state(){{
+  if [ "$1" = wan0 ] && [ ! -e "{changed}" ]; then echo managed; else echo unmanaged; fi
+}}
+nmcli(){{ printf '%s\n' "$*" >> "{calls}"; touch "{changed}"; }}
+sleep(){{ :; }}
+die(){{ echo "$*" >&2; return 1; }}
+{restore}
+r14_restore_networkmanager_baseline
+'''
+            result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), ["device set wan0 managed no"])
+
+    def test_runtime_absent_checkpoint_recovery_still_runs_host_restoration(self) -> None:
+        hardware = HARDWARE_TEST.read_text(encoding="utf-8")
+        stop = hardware[hardware.index("stop_test()") : hardware.index("trap 'status=$?")]
+        runtime_stop = stop.index('runtime-stop.sh"')
+        self.assertLess(runtime_stop, stop.index("r14_restore_networkmanager_baseline"))
+        self.assertLess(runtime_stop, stop.index("r14_wait_for_checkpoint_network_baseline"))
+        self.assertLess(stop.index("r14_wait_for_checkpoint_network_baseline"), stop.index("Forwarding restoration"))
+        checkpoint_remove = stop.index('rm -f -- "$R14_CHECKPOINT"')
+        self.assertLess(stop.index("Host restoration"), checkpoint_remove)
+        self.assertLess(stop.index("R14 deployment acceptance"), checkpoint_remove)
+        self.assertLess(stop.index("R14 Virtual-Router Deployment Acceptance"), checkpoint_remove)
 
     def test_r14_ipfix_refresh_is_stage_local(self) -> None:
         hardware = HARDWARE_TEST.read_text(encoding="utf-8")

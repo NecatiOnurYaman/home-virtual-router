@@ -170,10 +170,13 @@ refresh_ipfix() {
 stop_test() {
   local expected actual core_evidence=1 label
   [ -r "$R14_CHECKPOINT" ] && r14_checkpoint_identity_matches || die "R14 checkpoint/interface identity mismatch; refusing teardown"
+  r14_prepare_report
   for label in "DHCP lease" "DNS through HVR" "NAT translated source" "Firewall upstream block" "IPFIX decoded flow" "Metrics counter movement" "Runtime status/check"; do
     r14_summary_latest_is_pass "$label" || core_evidence=0
   done
   "$r14_repo_dir/lab/scripts/runtime-stop.sh"
+  r14_restore_networkmanager_baseline
+  r14_wait_for_checkpoint_network_baseline
   r14_check "Runtime stop" r14_runtime_residue_absent
   r14_check "Forwarding restoration" test "$(sysctl -n net.ipv4.ip_forward)" = "$(r14_checkpoint_field FORWARDING)"
   r14_check "Default-route restoration" cmp -s "$R14_DEFAULT_ROUTES_BEFORE" <(ip -o -4 route show default)
@@ -188,8 +191,6 @@ stop_test() {
   expected="$(r14_checkpoint_field LAN_UP)"; actual=0; physical_interface_is_up "$PHYSICAL_LAN_INTERFACE" && actual=1
   r14_check "LAN link restoration" test "$actual" = "$expected"
   r14_check "Residue" r14_runtime_residue_absent; r14_result "Host restoration" PASS
-  rm -f -- "$R14_CHECKPOINT" "$R14_DEFAULT_ROUTES_BEFORE"
-  rmdir "$R14_PERSIST_DIR" 2>/dev/null || true
   if [ "$core_evidence" -eq 1 ]; then
     r14_result "R14 deployment acceptance" PASS
     echo "R14 deployed virtual-router core acceptance passed."
@@ -199,6 +200,8 @@ stop_test() {
   fi
   echo 'R14 Virtual-Router Deployment Acceptance'
   awk -F '\t' '{latest[$1]=$2; order[++count]=$1} END {for(i=1;i<=count;i++) if(!seen[order[i]]++) printf "%-34s %s\n", order[i], latest[order[i]]}' "$R14_SUMMARY"
+  rm -f -- "$R14_CHECKPOINT" "$R14_DEFAULT_ROUTES_BEFORE"
+  rmdir "$R14_PERSIST_DIR" 2>/dev/null || true
 }
 
 trap 'status=$?; if [ "$status" -ne 0 ]; then r14_collect_failure_diagnostics; fi; exit "$status"' EXIT

@@ -217,7 +217,7 @@ Stop and verify restoration:
 sudo make physical-hardware-test-stop
 ```
 
-This uses `runtime-stop`, then requires forwarding and default routes to match the checkpoint, configured address presence to match baseline, HVR nftables to be absent, and all runtime/physical/IPFIX/metrics ownership state to be absent. It does not delete `/etc/home-virtual-router` configuration. If teardown is interrupted, rerun `sudo make physical-hardware-test-stop`; a recorded `stopping` runtime resumes from its remaining owned stages. The R14 checkpoint and default-route snapshot are retained until complete restoration succeeds.
+This uses `runtime-stop`, then requires forwarding, NetworkManager management state, default routes, configured address presence, and WAN/LAN links to match the checkpoint; HVR nftables and all runtime/physical/IPFIX/metrics ownership state must be absent. It does not delete `/etc/home-virtual-router` configuration. If teardown is interrupted, rerun `sudo make physical-hardware-test-stop`; either a recorded `stopping` runtime resumes from its remaining owned stages, or an absent runtime plus a valid R14 checkpoint continues the remaining host-restoration checks. The R14 checkpoint and default-route snapshot are retained until complete restoration and final result recording succeed.
 
 Metrics-export runtime health currently proves exact process identity and configuration, not successful delivery of every HTTP sample. Transient and repeated delivery failures remain logged in `/run/home-virtual-router/metrics-export/exporter.log` without stopping routing. Adding bounded success/failure health state would change the R11/R12 telemetry contract and is intentionally deferred to a separate focused change.
 
@@ -246,13 +246,13 @@ Do not flush nftables, flush NIC addresses, or stop a network manager globally. 
 
 ### Runtime stuck in `stopping`
 
-`Recorded status: stopping` means a teardown was interrupted or failed after some HVR-owned stages were already removed. The restoration checkpoint is deliberately retained so current code can verify identity and continue safely. Do not delete `checkpoint.env`, remove HVR addresses/routes manually, or discard runtime ownership files before attempting supported recovery. Rerun:
+`Recorded status: stopping` means a teardown was interrupted or failed after some HVR-owned stages were already removed. A fully absent general runtime with a still-valid R14 checkpoint is also recoverable: it means stage teardown finished but host restoration/result recording did not. The restoration checkpoint is deliberately retained so current code can verify interface name, ifindex, MAC, NetworkManager baseline, addresses, routes, links, and forwarding before continuing safely. Do not delete `checkpoint.env`, remove HVR addresses/routes manually, or discard runtime ownership files before attempting supported recovery. Rerun:
 
 ```sh
 sudo make physical-hardware-test-stop
 ```
 
-The resumed stop proceeds only from verified HVR-owned state. If it still refuses, capture the following diagnostics before changing host state:
+The resumed stop proceeds only from verified HVR-owned state. If NetworkManager has reclaimed an interface that the checkpoint records as unmanaged, R14 sets only that exact interface back to `managed no`, waits boundedly for NetworkManager-owned DHCP state to withdraw, and then verifies the complete checkpoint baseline. It never marks an interface managed, changes unrelated profiles, or disables NetworkManager globally. If recovery still refuses, capture the following diagnostics before changing host state:
 
 ```sh
 sudo make runtime-status
