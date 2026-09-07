@@ -276,6 +276,11 @@ physical_default_route_exact(){ [ "${ROUTE_HEALTH:-1}" = 1 ]; }
         stop = hardware[hardware.index("stop_test()") : hardware.index("trap 'status=$?")]
         self.assertLess(stop.index("r14_prepare_report"), stop.index("r14_summary_latest_is_pass"))
         self.assertIn("r14_restore_networkmanager_baseline", stop)
+        self.assertLess(stop.index('runtime-stop.sh"'), stop.index("r14_capture_network_reconciliation"))
+        self.assertLess(stop.index("r14_capture_network_reconciliation"), stop.index("r14_restore_networkmanager_baseline"))
+        self.assertLess(stop.index("r14_restore_networkmanager_baseline"), stop.index("r14_wait_for_natural_network_convergence"))
+        self.assertLess(stop.index("r14_wait_for_natural_network_convergence"), stop.index("r14_reconcile_network_baseline"))
+        self.assertLess(stop.index("r14_restore_networkmanager_baseline"), stop.index("r14_reconcile_network_baseline"))
         self.assertIn("r14_wait_for_checkpoint_network_baseline", stop)
         self.assertIn('r14_prepare_report\n  printf', common[common.index("r14_result()") : common.index("r14_check()")])
 
@@ -324,6 +329,119 @@ r14_restore_networkmanager_baseline
             result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), ["device set wan0 managed no"])
+
+    def test_r14_reconciliation_deletes_only_unchanged_captured_objects(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        reconcile = common[
+            common.index("r14_same_lines()"):
+            common.index("r14_checkpoint_network_baseline_matches()")
+        ]
+        command = f'''
+TMPDIR="__TMPDIR__"
+PHYSICAL_WAN_INTERFACE=wan0
+PHYSICAL_LAN_INTERFACE=lan0
+R14_RECONCILE_WAN_ADDRESSES="192.168.64.4/24"
+R14_RECONCILE_LAN_ADDRESSES=""
+R14_RECONCILE_DEFAULT_ROUTES="default via 192.168.64.1 dev wan0 proto dhcp src 192.168.64.4 metric 100"
+ip(){{
+  if [ "$*" = "-o -4 route show default dev wan0" ]; then
+    [ -e "$TMPDIR/route-removed" ] || echo "default via 192.168.64.1 dev wan0 proto dhcp src 192.168.64.4 metric 100"
+  elif [ "$*" = "-o -4 address show dev wan0 scope global" ]; then
+    [ -e "$TMPDIR/address-removed" ] || echo "2: wan0 inet 192.168.64.4/24 brd 192.168.64.255 scope global dynamic wan0"
+  elif [ "$*" = "-o -4 address show dev lan0 scope global" ]; then :
+  elif [ "$1 $2 $3" = "-4 route del" ]; then printf '%s\n' "$*" >> "$TMPDIR/calls"; touch "$TMPDIR/route-removed"
+  elif [ "$1 $2 $3" = "-4 address del" ]; then printf '%s\n' "$*" >> "$TMPDIR/calls"; touch "$TMPDIR/address-removed"
+  else return 1; fi
+}}
+die(){{ echo "$*" >&2; return 1; }}
+{reconcile}
+r14_reconcile_network_baseline
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            command = command.replace("__TMPDIR__", directory)
+            result = subprocess.run(
+                ["bash", "-c", command], capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = (Path(directory) / "calls").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(calls, [
+                "-4 route del default via 192.168.64.1 dev wan0 proto dhcp src 192.168.64.4 metric 100",
+                "-4 address del 192.168.64.4/24 dev wan0",
+            ])
+
+    def test_r14_reconciliation_accepts_natural_convergence_without_deletion(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        reconcile = common[common.index("r14_same_lines()"):
+                           common.index("r14_checkpoint_network_baseline_matches()")]
+        command = f'''
+PHYSICAL_WAN_INTERFACE=wan0; PHYSICAL_LAN_INTERFACE=lan0
+R14_RECONCILE_WAN_ADDRESSES="192.168.64.4/24"; R14_RECONCILE_LAN_ADDRESSES=""
+R14_RECONCILE_DEFAULT_ROUTES="default via 192.168.64.1 dev wan0 proto dhcp"
+ip(){{
+  case "$*" in
+    "-o -4 route show default dev wan0"|"-o -4 address show dev wan0 scope global"|"-o -4 address show dev lan0 scope global") : ;;
+    *" del "*) return 99 ;;
+    *) return 1 ;;
+  esac
+}}
+die(){{ echo "$*" >&2; return 1; }}
+{reconcile}
+r14_reconcile_network_baseline
+'''
+        result = subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_r14_reconciliation_fails_closed_if_captured_state_changes(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        reconcile = common[
+            common.index("r14_same_lines()"):
+            common.index("r14_checkpoint_network_baseline_matches()")
+        ]
+        for kind, setup, output in (
+            (
+                "route",
+                'R14_RECONCILE_WAN_ADDRESSES=""; R14_RECONCILE_DEFAULT_ROUTES="default via 192.168.64.1 dev wan0 proto dhcp"',
+                'default via 192.168.64.254 dev wan0 proto dhcp',
+            ),
+            (
+                "address",
+                'R14_RECONCILE_WAN_ADDRESSES="192.168.64.4/24"; R14_RECONCILE_DEFAULT_ROUTES=""',
+                '2: wan0 inet 192.168.64.5/24 brd 192.168.64.255 scope global dynamic wan0',
+            ),
+        ):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                command = f'''
+set -e
+TMPDIR="{directory}"
+PHYSICAL_WAN_INTERFACE=wan0; PHYSICAL_LAN_INTERFACE=lan0
+{setup}; R14_RECONCILE_LAN_ADDRESSES=""
+ip(){{
+  if [ "$*" = "-o -4 route show default dev wan0" ]; then [ "{kind}" = route ] && echo "{output}"
+  elif [ "$*" = "-o -4 address show dev wan0 scope global" ]; then [ "{kind}" = address ] && echo "{output}"
+  elif [ "$*" = "-o -4 address show dev lan0 scope global" ]; then :
+  elif [[ "$*" == *" del "* ]]; then touch "$TMPDIR/deleted"
+  else return 1; fi
+}}
+die(){{ echo "$*" >&2; return 1; }}
+{reconcile}
+r14_reconcile_network_baseline
+'''
+                result = subprocess.run(
+                    ["bash", "-c", command], capture_output=True, text=True, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((Path(directory) / "deleted").exists())
+
+    def test_already_unmanaged_v2_recovery_requires_dhcp_provenance(self) -> None:
+        common = HARDWARE_COMMON.read_text(encoding="utf-8")
+        capture = common[common.index("r14_capture_interface_addresses_for_reconciliation()"):
+                         common.index("r14_capture_inventory()")]
+        self.assertIn("dynamic", capture)
+        self.assertIn("proto dhcp", capture)
+        self.assertIn('r14_checkpoint_field R14_VERSION)" = 2', common)
+        self.assertNotIn("addr flush", common)
+        self.assertNotIn("route flush", common)
+        self.assertIn('[ ! -s "$R14_DEFAULT_ROUTES_BEFORE" ] || return 0', capture)
 
     def test_runtime_absent_checkpoint_recovery_still_runs_host_restoration(self) -> None:
         hardware = HARDWARE_TEST.read_text(encoding="utf-8")

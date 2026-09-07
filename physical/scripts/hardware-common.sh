@@ -16,6 +16,10 @@ readonly R14_FIREWALL_PROOF="$R14_DIR/firewall-proof.txt"
 readonly R14_FIREWALL_OK="$R14_DIR/firewall-proof.ok"
 readonly R14_VERSION=3
 
+R14_RECONCILE_WAN_ADDRESSES=""
+R14_RECONCILE_LAN_ADDRESSES=""
+R14_RECONCILE_DEFAULT_ROUTES=""
+
 r14_require_real_hardware() {
   require_linux
   require_root
@@ -57,6 +61,55 @@ r14_networkmanager_state() {
   [ -n "$output" ] || { printf 'unavailable\n'; return; }
   if printf '%s\n' "$output" | grep -Eiq 'unmanaged|^[^:]*:10[[:space:]]'; then printf 'unmanaged\n'
   else printf 'managed\n'; fi
+}
+
+r14_networkmanager_connection() {
+  local output
+  output="$(nmcli -g GENERAL.CONNECTION device show "$1" 2>/dev/null || true)"
+  case "$output" in ''|'--') return 1 ;; *) printf '%s\n' "$output" ;; esac
+}
+
+r14_capture_interface_addresses_for_reconciliation() {
+  local interface="$1" state="$2" variable_name="$3" line address captured=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ "$state" = managed ]; then
+      r14_networkmanager_connection "$interface" >/dev/null ||
+        die "cannot attribute IPv4 state on managed interface $interface to an active NetworkManager connection"
+    elif ! grep -Eq '(^|[[:space:]])dynamic([[:space:]]|$)' <<< "$line"; then
+      die "unexpected non-DHCP IPv4 state on already-unmanaged interface $interface: $line"
+    fi
+    address="$(awk '{print $4}' <<< "$line")"
+    [ -n "$address" ] || die "cannot parse IPv4 state on $interface: $line"
+    captured="${captured}${captured:+$'\n'}${address}"
+  done < <(ip -o -4 address show dev "$interface" scope global)
+  printf -v "$variable_name" '%s' "$captured"
+}
+
+r14_capture_network_reconciliation() {
+  local wan_state lan_state line
+  wan_state="$(r14_networkmanager_state "$PHYSICAL_WAN_INTERFACE")"
+  lan_state="$(r14_networkmanager_state "$PHYSICAL_LAN_INTERFACE")"
+  R14_RECONCILE_WAN_ADDRESSES=""; R14_RECONCILE_LAN_ADDRESSES=""; R14_RECONCILE_DEFAULT_ROUTES=""
+  if [ "$(r14_checkpoint_field WAN_ADDRESS_PRESENT)" = 0 ]; then
+    r14_capture_interface_addresses_for_reconciliation "$PHYSICAL_WAN_INTERFACE" "$wan_state" R14_RECONCILE_WAN_ADDRESSES
+  fi
+  if [ "$(r14_checkpoint_field LAN_ADDRESS_PRESENT)" = 0 ]; then
+    r14_capture_interface_addresses_for_reconciliation "$PHYSICAL_LAN_INTERFACE" "$lan_state" R14_RECONCILE_LAN_ADDRESSES
+  fi
+  if [ "$(r14_checkpoint_field DEFAULT_ROUTE_PRESENT)" = 0 ]; then
+    [ ! -s "$R14_DEFAULT_ROUTES_BEFORE" ] || return 0
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if [ "$wan_state" = managed ]; then
+        r14_networkmanager_connection "$PHYSICAL_WAN_INTERFACE" >/dev/null ||
+          die "cannot attribute the default route on managed interface $PHYSICAL_WAN_INTERFACE to NetworkManager"
+      elif ! grep -Eq '(^|[[:space:]])proto dhcp([[:space:]]|$)' <<< "$line"; then
+        die "unexpected non-DHCP default route on already-unmanaged interface $PHYSICAL_WAN_INTERFACE: $line"
+      fi
+      R14_RECONCILE_DEFAULT_ROUTES="${R14_RECONCILE_DEFAULT_ROUTES}${R14_RECONCILE_DEFAULT_ROUTES:+$'\n'}${line}"
+    done < <(ip -o -4 route show default dev "$PHYSICAL_WAN_INTERFACE")
+  fi
 }
 
 r14_capture_inventory() {
@@ -182,6 +235,60 @@ r14_restore_networkmanager_baseline() {
   done
 }
 
+r14_wait_for_natural_network_convergence() {
+  local attempt
+  for ((attempt=0; attempt<10; attempt++)); do
+    if { [ -z "$R14_RECONCILE_DEFAULT_ROUTES" ] || ! ip -o -4 route show default dev "$PHYSICAL_WAN_INTERFACE" | grep -q .; } &&
+      { [ -z "$R14_RECONCILE_WAN_ADDRESSES" ] || ! ip -o -4 address show dev "$PHYSICAL_WAN_INTERFACE" scope global | grep -q .; } &&
+      { [ -z "$R14_RECONCILE_LAN_ADDRESSES" ] || ! ip -o -4 address show dev "$PHYSICAL_LAN_INTERFACE" scope global | grep -q .; }; then
+      return 0
+    fi
+    sleep 0.1
+  done
+}
+
+r14_same_lines() {
+  [ "$(printf '%s\n' "$1" | LC_ALL=C sort)" = "$(printf '%s\n' "$2" | LC_ALL=C sort)" ]
+}
+
+r14_reconcile_default_routes() {
+  local current line
+  local -a fields
+  current="$(ip -o -4 route show default dev "$PHYSICAL_WAN_INTERFACE")"
+  [ -n "$current" ] || return 0
+  r14_same_lines "$R14_RECONCILE_DEFAULT_ROUTES" "$current" || {
+    printf 'unexpected default route after restoration:\n' >&2
+    printf '  %s\n' "$current" >&2
+    die "default-route state changed after R14 reconciliation capture"
+  }
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    read -r -a fields <<< "$line"
+    ip -4 route del "${fields[@]}"
+  done <<< "$R14_RECONCILE_DEFAULT_ROUTES"
+}
+
+r14_reconcile_interface_addresses() {
+  local interface="$1" captured="$2" current address
+  current="$(ip -o -4 address show dev "$interface" scope global | awk '{print $4}')"
+  [ -n "$current" ] || return 0
+  r14_same_lines "$captured" "$current" || {
+    printf 'unexpected IPv4 after restoration on %s:\n' "$interface" >&2
+    printf '  %s dev %s\n' "$current" "$interface" >&2
+    die "IPv4 state changed after R14 reconciliation capture on $interface"
+  }
+  while IFS= read -r address; do
+    [ -n "$address" ] || continue
+    ip -4 address del "$address" dev "$interface"
+  done <<< "$captured"
+}
+
+r14_reconcile_network_baseline() {
+  r14_reconcile_default_routes
+  r14_reconcile_interface_addresses "$PHYSICAL_WAN_INTERFACE" "$R14_RECONCILE_WAN_ADDRESSES"
+  r14_reconcile_interface_addresses "$PHYSICAL_LAN_INTERFACE" "$R14_RECONCILE_LAN_ADDRESSES"
+}
+
 r14_checkpoint_network_baseline_matches() {
   local expected actual
   cmp -s "$R14_DEFAULT_ROUTES_BEFORE" <(ip -o -4 route show default) || return 1
@@ -200,6 +307,18 @@ r14_wait_for_checkpoint_network_baseline() {
     r14_checkpoint_network_baseline_matches && return 0
     sleep 0.1
   done
+  if ip -o -4 address show dev "$PHYSICAL_WAN_INTERFACE" scope global | grep -q .; then
+    printf 'unexpected WAN IPv4 after restoration:\n' >&2
+    ip -o -4 address show dev "$PHYSICAL_WAN_INTERFACE" scope global | sed 's/^/  /' >&2
+  fi
+  if ip -o -4 address show dev "$PHYSICAL_LAN_INTERFACE" scope global | grep -q .; then
+    printf 'unexpected LAN IPv4 after restoration:\n' >&2
+    ip -o -4 address show dev "$PHYSICAL_LAN_INTERFACE" scope global | sed 's/^/  /' >&2
+  fi
+  if ip -o -4 route show default dev "$PHYSICAL_WAN_INTERFACE" | grep -q .; then
+    printf 'unexpected default route after restoration:\n' >&2
+    ip -o -4 route show default dev "$PHYSICAL_WAN_INTERFACE" | sed 's/^/  /' >&2
+  fi
   die "host addresses/default routes did not return to the R14 checkpoint baseline"
 }
 

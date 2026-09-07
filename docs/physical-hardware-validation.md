@@ -252,7 +252,7 @@ Do not flush nftables, flush NIC addresses, or stop a network manager globally. 
 sudo make physical-hardware-test-stop
 ```
 
-The resumed stop proceeds only from verified HVR-owned state. If NetworkManager has reclaimed an interface that the checkpoint records as unmanaged, R14 sets only that exact interface back to `managed no`, waits boundedly for NetworkManager-owned DHCP state to withdraw, and then verifies the complete checkpoint baseline. It never marks an interface managed, changes unrelated profiles, or disables NetworkManager globally. If recovery still refuses, capture the following diagnostics before changing host state:
+The resumed stop proceeds only from verified HVR-owned state. If NetworkManager has reclaimed an interface that the checkpoint records as unmanaged, R14 sets only that exact interface back to `managed no`. Because becoming unmanaged does not guarantee that an existing IPv4 address or route disappears, R14 captures attributable objects first, waits boundedly, and removes only the unchanged exact objects required to match the checkpoint. It never flushes an interface, marks an interface managed, changes unrelated profiles, or disables NetworkManager globally. If recovery still refuses, capture the following diagnostics before changing host state:
 
 ```sh
 sudo make runtime-status

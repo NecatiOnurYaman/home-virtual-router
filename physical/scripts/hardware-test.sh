@@ -175,7 +175,10 @@ stop_test() {
     r14_summary_latest_is_pass "$label" || core_evidence=0
   done
   "$r14_repo_dir/lab/scripts/runtime-stop.sh"
+  r14_capture_network_reconciliation
   r14_restore_networkmanager_baseline
+  r14_wait_for_natural_network_convergence
+  r14_reconcile_network_baseline
   r14_wait_for_checkpoint_network_baseline
   r14_check "Runtime stop" r14_runtime_residue_absent
   r14_check "Forwarding restoration" test "$(sysctl -n net.ipv4.ip_forward)" = "$(r14_checkpoint_field FORWARDING)"
