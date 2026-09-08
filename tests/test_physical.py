@@ -270,6 +270,7 @@ physical_default_route_exact(){ [ "${ROUTE_HEALTH:-1}" = 1 ]; }
         self.assertIn('status="$(runtime_state_field status)"', runtime_stop)
         self.assertIn('[ "$status" = stopping ]', runtime_stop)
         self.assertIn('physical_stage_teardown_resumable "$stage"', runtime_stop)
+        self.assertIn('[ "$status" = stopping ] || [ "$recovery" -eq 1 ]', runtime_stop)
         checkpoint_remove = hardware.index('rm -f -- "$R14_CHECKPOINT" "$R14_DEFAULT_ROUTES_BEFORE"')
         for proof in ("Forwarding restoration", "Default-route restoration", "WAN link restoration", "Residue"):
             self.assertLess(hardware.index(proof, hardware.index("stop_test()")), checkpoint_remove)
@@ -283,6 +284,30 @@ physical_default_route_exact(){ [ "${ROUTE_HEALTH:-1}" = 1 ]; }
         self.assertLess(stop.index("r14_restore_networkmanager_baseline"), stop.index("r14_reconcile_network_baseline"))
         self.assertIn("r14_wait_for_checkpoint_network_baseline", stop)
         self.assertIn('r14_prepare_report\n  printf', common[common.index("r14_result()") : common.index("r14_check()")])
+
+    def test_recovery_stop_is_explicit_and_normal_stop_remains_fail_closed(self) -> None:
+        runtime_stop = (ROOT / "lab/scripts/runtime-stop.sh").read_text(encoding="utf-8")
+        before_state_write = runtime_stop[:runtime_stop.index('runtime_write_state "$profile" stopping')]
+        normal_inconsistent = runtime_stop[runtime_stop.index('      if [ "$deployment" = physical ]'):runtime_stop.index('      ;;', runtime_stop.index('      if [ "$deployment" = physical ]'))]
+        self.assertIn('[ "$1" = --recover ]', runtime_stop)
+        self.assertIn('[ "$status" = running ]', before_state_write)
+        self.assertIn('configuration differs from the active runtime snapshot', before_state_write)
+        self.assertIn('physical_stage_teardown_resumable "$stage" || die', before_state_write)
+        self.assertIn('[ "$status" = stopping ] || [ "$recovery" -eq 1 ]', normal_inconsistent)
+        self.assertIn('runtime_recover_disable_stage "$stage"', normal_inconsistent)
+
+    def test_physical_recovery_is_limited_to_verified_owned_dnsmasq_state(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        resumable = common[common.index("physical_stage_teardown_resumable()") : common.index("physical_recover_dns_disable()")]
+        recovery = common[common.index("physical_recover_dns_disable()") : common.index("physical_topology_enable()")]
+        for proof in ('[ ! -L "$DNSMASQ_CONFIG" ]', 'stat -c %u:%a', 'physical_dhcp_config_healthy',
+                      '[ ! -L "$DNSMASQ_PID_FILE" ]', 'project_process_matches', 'process_is_in_router_namespace'):
+            self.assertIn(proof, resumable)
+        self.assertIn('physical_stage_teardown_resumable dns || die', recovery)
+        self.assertIn('physical_stage_teardown_resumable dhcp || die', recovery)
+        self.assertIn('stop_project_process_if_present', recovery)
+        self.assertNotIn('killall', recovery)
+        self.assertNotIn('pkill', recovery)
 
     def test_runtime_cleanup_cannot_remove_r14_controller_state(self) -> None:
         runtime_stop = (ROOT / "lab/scripts/runtime-stop.sh").read_text(encoding="utf-8")

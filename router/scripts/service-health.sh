@@ -23,11 +23,20 @@ if output="$("$health_repo_dir/lab/scripts/runtime-check.sh" 2>&1)"; then
 fi
 echo "HVR health failure detected:" >&2
 printf '%s\n' "$output" >&2
+echo "HVR health requesting safe recovery teardown." >&2
+if ! output="$("$health_repo_dir/lab/scripts/runtime-stop.sh" --recover 2>&1)"; then
+  echo "HVR health recovery teardown failed; main service was not restarted:" >&2
+  printf '%s\n' "$output" >&2
+  exit 1
+fi
 echo "HVR health requesting one controlled service restart." >&2
-if systemctl restart home-virtual-router.service; then
-  "$health_repo_dir/lab/scripts/runtime-check.sh"
-  echo "HVR health recovery succeeded." >&2
-else
+if ! systemctl restart home-virtual-router.service; then
   echo "HVR health recovery failed; main service state remains visible in systemd." >&2
   exit 1
 fi
+if ! output="$("$health_repo_dir/lab/scripts/runtime-check.sh" 2>&1)"; then
+  echo "HVR health recovery failed post-restart runtime validation:" >&2
+  printf '%s\n' "$output" >&2
+  exit 1
+fi
+echo "HVR health recovery succeeded." >&2

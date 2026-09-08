@@ -472,8 +472,34 @@ physical_stage_teardown_resumable() {
   case "$1" in
     topology) [ -r "$PHYSICAL_MAP_FILE" ] && physical_map_matches_live_config ;;
     routing) [ -r "$PHYSICAL_FORWARDING_ORIGINAL" ] ;;
+    dhcp)
+      [ -f "$DNSMASQ_CONFIG" ] && [ ! -L "$DNSMASQ_CONFIG" ] &&
+        [ "$(stat -c %u:%a "$DNSMASQ_CONFIG")" = 0:644 ] && physical_dhcp_config_healthy &&
+        [ ! -L "$DNSMASQ_PID_FILE" ] &&
+        { ! pid="$(read_project_pid "$DNSMASQ_PID_FILE" 2>/dev/null)" ||
+          ! process_is_running "$pid" ||
+          { project_process_matches "$pid" dnsmasq "$DNSMASQ_CONFIG" && process_is_in_router_namespace "$pid"; }; } ;;
+    dns)
+      [ -f "$DNS_ENABLED_FILE" ] && [ ! -L "$DNS_ENABLED_FILE" ] &&
+        [ "$(stat -c %u:%a "$DNS_ENABLED_FILE")" = 0:644 ] &&
+        physical_stage_teardown_resumable dhcp ;;
     *) return 1 ;;
   esac
+}
+
+physical_recover_dns_disable() {
+  physical_stage_teardown_resumable dns || die "physical DNS recovery ownership is inconsistent"
+  stop_project_process_if_present "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"
+  rm -f -- "$DNS_ENABLED_FILE"
+  render_dnsmasq_config
+  remove_project_dns_files
+}
+
+physical_recover_dhcp_disable() {
+  physical_stage_teardown_resumable dhcp || die "physical DHCP recovery ownership is inconsistent"
+  [ ! -e "$DNS_ENABLED_FILE" ] || die "recover physical DNS before DHCP"
+  stop_project_process_if_present "$DNSMASQ_PID_FILE" dnsmasq "$DNSMASQ_CONFIG"
+  remove_project_dhcp_files
 }
 
 physical_topology_enable() {

@@ -206,7 +206,7 @@ class PersistenceControlTests(unittest.TestCase):
 
 
 class HealthSupervisionTests(unittest.TestCase):
-    def run_health(self, state: str, checks: list[int], restart: int = 0) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    def run_health(self, state: str, checks: list[int], restart: int = 0, teardown: int = 0, checkpoint: bool = False) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
             scripts = repo / "router/scripts"
@@ -216,20 +216,26 @@ class HealthSupervisionTests(unittest.TestCase):
             runtime.mkdir(parents=True)
             commands.mkdir()
             health = scripts / "service-health.sh"
-            health.write_text((ROOT / "router/scripts/service-health.sh").read_text(encoding="utf-8"), encoding="utf-8")
+            health_source = (ROOT / "router/scripts/service-health.sh").read_text(encoding="utf-8")
+            health.write_text(health_source.replace("/var/lib/home-virtual-router/r14/checkpoint.env", str(repo / "checkpoint")), encoding="utf-8")
             health.chmod(0o755)
+            if checkpoint:
+                (repo / "checkpoint").touch()
             counter = repo / "counter"
             calls = repo / "calls"
             (runtime / "runtime-check.sh").write_text(
                 '#!/usr/bin/env bash\nset -u\nn=$(cat "$HVR_COUNTER" 2>/dev/null || echo 0)\nn=$((n + 1))\necho "$n" > "$HVR_COUNTER"\neval "code=\\${HVR_CHECK_$n:-0}"\n[ "$code" -eq 0 ] || echo "fixture unhealthy" >&2\nexit "$code"\n', encoding="utf-8")
             (runtime / "runtime-check.sh").chmod(0o755)
+            (runtime / "runtime-stop.sh").write_text(
+                '#!/usr/bin/env bash\necho "recover $*" >> "$HVR_CALLS"\nexit "${HVR_TEARDOWN_RESULT:-0}"\n', encoding="utf-8")
+            (runtime / "runtime-stop.sh").chmod(0o755)
             (commands / "systemctl").write_text(
                 '#!/usr/bin/env bash\nif [ "$1" = show ]; then echo "$HVR_STATE"; exit 0; fi\necho "$*" >> "$HVR_CALLS"\nexit "${HVR_RESTART_RESULT:-0}"\n', encoding="utf-8")
             (commands / "systemctl").chmod(0o755)
             (commands / "sleep").write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
             (commands / "sleep").chmod(0o755)
             env = os.environ.copy()
-            env.update({"PATH": f"{commands}:{env['PATH']}", "HVR_STATE": state, "HVR_COUNTER": str(counter), "HVR_CALLS": str(calls), "HVR_RESTART_RESULT": str(restart)})
+            env.update({"PATH": f"{commands}:{env['PATH']}", "HVR_STATE": state, "HVR_COUNTER": str(counter), "HVR_CALLS": str(calls), "HVR_RESTART_RESULT": str(restart), "HVR_TEARDOWN_RESULT": str(teardown)})
             for index, code in enumerate(checks, 1):
                 env[f"HVR_CHECK_{index}"] = str(code)
             result = subprocess.run([str(health)], capture_output=True, text=True, env=env)
@@ -253,15 +259,27 @@ class HealthSupervisionTests(unittest.TestCase):
     def test_persistent_failure_requests_one_controlled_restart(self) -> None:
         result, calls = self.run_health("active", [1, 1, 0])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(calls, ["restart home-virtual-router.service"])
+        self.assertEqual(calls, ["recover --recover", "restart home-virtual-router.service"])
         self.assertIn("health failure detected", result.stderr)
         self.assertIn("recovery succeeded", result.stderr)
 
     def test_failed_recovery_is_surfaced_without_loop(self) -> None:
         result, calls = self.run_health("active", [1, 1], restart=1)
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls, ["restart home-virtual-router.service"])
+        self.assertEqual(calls, ["recover --recover", "restart home-virtual-router.service"])
         self.assertIn("recovery failed", result.stderr)
+
+    def test_recovery_teardown_failure_prevents_restart(self) -> None:
+        result, calls = self.run_health("active", [1, 1], teardown=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, ["recover --recover"])
+        self.assertIn("recovery teardown failed; main service was not restarted", result.stderr)
+
+    def test_failed_post_restart_validation_is_explicit(self) -> None:
+        result, calls = self.run_health("active", [1, 1, 1])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, ["recover --recover", "restart home-virtual-router.service"])
+        self.assertIn("recovery failed post-restart runtime validation", result.stderr)
 
     def test_failed_main_is_visible_and_not_restarted(self) -> None:
         result, calls = self.run_health("failed", [])
@@ -273,6 +291,10 @@ class HealthSupervisionTests(unittest.TestCase):
         health = (ROOT / "router/scripts/service-health.sh").read_text(encoding="utf-8")
         self.assertIn("/var/lib/home-virtual-router/r14/checkpoint.env", health)
         self.assertLess(health.index("checkpoint.env"), health.index("runtime-check.sh"))
+        result, calls = self.run_health("active", [], checkpoint=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("R14 checkpoint is active", result.stderr)
 
 
 if __name__ == "__main__":

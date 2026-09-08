@@ -53,6 +53,8 @@ case "$stage:$action" in
   dhcp:disable) physical_dhcp_disable ;;
   dns:enable) physical_dns_enable ;;
   dns:disable) physical_dns_disable ;;
+  dns:recover-disable) physical_recover_dns_disable ;;
+  dhcp:recover-disable) physical_recover_dhcp_disable ;;
   ipfix:enable) physical_dns_healthy || die "physical DNS must be healthy"; physical_ipfix_enable ;;
   ipfix:disable) physical_ipfix_disable ;;
   metrics-export:enable) "$HVR_REPO_DIR/lab/scripts/enable-metrics-export.sh" ;;

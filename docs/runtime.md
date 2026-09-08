@@ -51,7 +51,7 @@ Status reports `running`, `stopped`, `degraded`, or `inconsistent` plus each des
 
 ## Persistent systemd operation and supervision
 
-R15 introduced the explicitly installable orchestration layer; R16 adds a 30-second companion health timer that confirms failures and requests one controlled restart through the same canonical runtime lifecycle. Preview the generated units with:
+R15 introduced the explicitly installable orchestration layer; R16 adds a 30-second companion health timer that confirms failures, performs an ownership-verified recovery teardown, and requests one controlled restart through the same canonical runtime lifecycle. Ordinary operator teardown remains fail-closed for first-pass inconsistent state. Preview the generated units with:
 
 ```sh
 make systemd-show > /tmp/home-virtual-router.service

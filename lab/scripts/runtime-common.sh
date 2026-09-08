@@ -218,6 +218,14 @@ runtime_disable_stage() {
   esac
 }
 
+runtime_recover_disable_stage() {
+  [ "$DEPLOYMENT_MODE" = physical ] || die "recovery teardown is supported only for physical deployment"
+  case "$1" in
+    dns|dhcp) "$HVR_REPO_DIR/physical/scripts/physical-stage.sh" "$1" recover-disable ;;
+    *) runtime_disable_stage "$1" ;;
+  esac
+}
+
 runtime_status_report() {
   local desired stage code healthy=0 absent=0 bad=0 core_bad=0 telemetry_bad=0
   desired="$(runtime_desired_stages)"

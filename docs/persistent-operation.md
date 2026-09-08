@@ -2,7 +2,11 @@
 
 R16 keeps the R15 `Type=oneshot`/`RemainAfterExit=yes` service and adds a systemd-native health service and timer. The main service still delegates all ownership and convergence to the canonical `runtime-start.sh`, `runtime-check.sh`, and `runtime-stop.sh` lifecycle. The watchdog never repairs or respawns an individual DHCP, DNS, IPFIX, or metrics process.
 
-`home-virtual-router-health.timer` runs `home-virtual-router-health.service` about every 30 seconds. A healthy or intentionally inactive router causes no mutation and no routine journal message. Starting, stopping, and reloading states are skipped. A first failed runtime check is confirmed after five seconds; a transient failure that clears causes no recovery. A confirmed failure requests exactly one `systemctl restart home-virtual-router.service`, which performs canonical stop, start, and final health validation. A failed restart remains visible in systemd and journald. The main service retains its limit of three starts per five minutes, so persistent faults cannot create an unbounded restart storm. The timer has `Persistent=false`, so powered-off intervals do not create catch-up checks.
+`home-virtual-router-health.timer` runs `home-virtual-router-health.service` about every 30 seconds. A healthy or intentionally inactive router causes no mutation and no routine journal message. Starting, stopping, and reloading states are skipped. A first failed runtime check is confirmed after five seconds; a transient failure that clears causes no recovery.
+
+For a confirmed failure, the health action first requests the explicit recovery form of canonical runtime teardown. That transaction holds the normal runtime lock and requires an exactly running physical runtime, matching deployment/profile and configuration snapshot, recorded stage ownership, and existing stage-specific proof that any inconsistent residue is safely reconcilable. Only the verified HVR dnsmasq path currently needs special recovery cleanup; it verifies generated configuration and marker metadata plus process identity/namespace before acting. Ambiguous state fails before teardown, and the main service is not restarted. A successful recovery teardown is followed by exactly one `systemctl restart home-virtual-router.service` and a required full runtime check. This remains coherent whole-runtime reconstruction, never per-daemon respawning.
+
+Ordinary `runtime-stop` and `systemd-stop` retain their conservative first-stop behavior: an inconsistent owned stage is refused rather than being treated automatically as an interrupted teardown. A failed recovery remains visible in systemd and journald, and a failed main service is not automatically resurrected. The main service retains its limit of three starts per five minutes, so persistent faults cannot create an unbounded restart storm. The timer has `Persistent=false`, so powered-off intervals do not create catch-up checks.
 
 ## Prerequisites and interface ownership
 
@@ -84,7 +88,7 @@ sudo make runtime-status
 sudo make runtime-check
 ```
 
-The health journal records a confirmed failure and its runtime-check reason, the single recovery request, and recovery success or failure. Successful periodic checks are intentionally silent.
+The health journal records a confirmed failure and its runtime-check reason, recovery-teardown request or refusal, the single main-service restart, post-restart validation, and recovery success or failure. Successful periodic checks are intentionally silent.
 
 Temporary link loss can make the canonical runtime check fail. The five-second confirmation avoids reacting to a single brief failure. A longer outage may cause one full recovery attempt; if convergence cannot succeed, the main unit remains failed and its existing systemd start limit bounds retry behavior. The DHCP client continues to own normal lease renewal. R16 does not add a WAN failure state machine.
 
