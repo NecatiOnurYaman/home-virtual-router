@@ -1,16 +1,22 @@
 [Unit]
 Description=Home Virtual Router runtime
-Documentation=file://@HVR_REPO_DIR@/docs/runtime.md
-After=network.target
+Documentation=@HVR_DOCUMENTATION_QUOTED@
+After=network-pre.target NetworkManager.service systemd-networkd.service
+Before=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-WorkingDirectory=@HVR_REPO_DIR@
-ExecStart=@HVR_REPO_DIR@/lab/scripts/runtime-start.sh
-ExecStop=@HVR_REPO_DIR@/lab/scripts/runtime-stop.sh
+WorkingDirectory=@HVR_REPO_DIR_QUOTED@
+ExecStart=@HVR_SERVICE_START_QUOTED@
+ExecStop=@HVR_SERVICE_STOP_QUOTED@
+Restart=on-failure
+RestartSec=10s
 TimeoutStartSec=180
 TimeoutStopSec=120
+KillMode=mixed
 
 [Install]
 WantedBy=multi-user.target
