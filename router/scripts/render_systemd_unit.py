@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the R15 systemd unit without installing or enabling it."""
+"""Render HVR systemd units without installing or enabling them."""
 
 from pathlib import Path
 import sys
@@ -41,15 +41,28 @@ def systemd_documentation_uri(value: str) -> str:
     return ("file://" + quote(value, safe="/-._~")).replace("%", "%%")
 
 
-def render(repository: Path) -> str:
+def replacements(repository: Path) -> dict[str, str]:
     repository = repository.resolve(strict=True)
     repository_text = str(repository)
-    template = repository / "deploy/systemd/home-virtual-router.service.in"
-    return (template.read_text(encoding="utf-8")
-            .replace("@HVR_DOCUMENTATION_URI@", systemd_documentation_uri(str(repository / "docs/runtime.md")))
-            .replace("@HVR_EXEC_START@", systemd_exec_argument(str(repository / "router/scripts/service-start.sh")))
-            .replace("@HVR_EXEC_STOP@", systemd_exec_argument(str(repository / "router/scripts/service-stop.sh")))
-            .replace("@HVR_WORKING_DIRECTORY@", systemd_path_value(repository_text)))
+    return {
+        "@HVR_DOCUMENTATION_URI@": systemd_documentation_uri(str(repository / "docs/runtime.md")),
+        "@HVR_EXEC_START@": systemd_exec_argument(str(repository / "router/scripts/service-start.sh")),
+        "@HVR_EXEC_STOP@": systemd_exec_argument(str(repository / "router/scripts/service-stop.sh")),
+        "@HVR_HEALTH_CHECK@": systemd_exec_argument(str(repository / "router/scripts/service-health.sh")),
+        "@HVR_WORKING_DIRECTORY@": systemd_path_value(repository_text),
+    }
+
+
+def render_template(repository: Path, name: str) -> str:
+    repository = repository.resolve(strict=True)
+    rendered = (repository / f"deploy/systemd/{name}.in").read_text(encoding="utf-8")
+    for marker, value in replacements(repository).items():
+        rendered = rendered.replace(marker, value)
+    return rendered
+
+
+def render(repository: Path) -> str:
+    return render_template(repository, "home-virtual-router.service")
 
 
 def main() -> int:

@@ -1,14 +1,15 @@
-.PHONY: help check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test physical-hardware-check physical-hardware-test-start physical-hardware-test-refresh-ipfix physical-hardware-test-observe-nat physical-hardware-test-observe-firewall physical-hardware-test-verify physical-hardware-test-stop physical-hardware-test-post-reboot systemd-show systemd-show-networkmanager systemd-install systemd-uninstall systemd-enable systemd-disable systemd-start systemd-stop systemd-status
+.PHONY: help check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test physical-hardware-check physical-hardware-test-start physical-hardware-test-refresh-ipfix physical-hardware-test-observe-nat physical-hardware-test-observe-firewall physical-hardware-test-verify physical-hardware-test-stop physical-hardware-test-post-reboot systemd-show systemd-health-show systemd-show-networkmanager systemd-install systemd-uninstall systemd-enable systemd-disable systemd-start systemd-stop systemd-status
 
 help:
-	@echo "R15 persistent router service targets:"
+	@echo "R16 persistent router service and supervision targets:"
 	@echo "  systemd-show / systemd-show-networkmanager preview generated persistence artifacts"
 	@echo "  systemd-install                         install artifacts; does not enable or start"
 	@echo "  systemd-enable / systemd-disable        change boot enablement only"
 	@echo "  systemd-start / systemd-stop            control the persistent router service"
 	@echo "  systemd-status                          show systemd service state"
+	@echo "  systemd-health-show                     preview the health service and timer"
 	@echo "  systemd-uninstall                       remove exact artifacts after stop/disable"
-	@echo "See docs/persistent-operation.md for the safe R15 workflow."
+	@echo "See docs/persistent-operation.md for the safe R16 workflow."
 	@echo ""
 	@echo "R14 deployed virtual-router validation targets (legacy target names retained):"
 	@echo "  physical-hardware-check                 read-only deployment-interface preflight"
@@ -236,6 +237,9 @@ physical-hardware-test-post-reboot:
 
 systemd-show:
 	@python3 router/scripts/render_systemd_unit.py "$(CURDIR)"
+
+systemd-health-show:
+	@python3 router/scripts/render_systemd_health.py "$(CURDIR)"
 
 systemd-show-networkmanager:
 	@python3 router/scripts/persistence.py render-nm "$(CURDIR)"

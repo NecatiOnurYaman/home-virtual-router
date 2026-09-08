@@ -50,7 +50,7 @@ The tracked default remains `DEPLOYMENT_MODE=lab`. Physical mode is selected onl
 
 ## Physical deployment / R14
 
-R14 is a bounded, operator-driven acceptance lifecycle for a real host-context deployment. R15 adds explicit systemd installation, boot enablement, and a persistent per-interface NetworkManager exclusion while continuing to use the canonical runtime lifecycle. Installation never enables or starts the service automatically. See [`docs/persistent-operation.md`](docs/persistent-operation.md).
+R14 is a bounded, operator-driven acceptance lifecycle for a real host-context deployment. R15 adds explicit systemd installation, boot enablement, and a persistent per-interface NetworkManager exclusion. R16 adds bounded 30-second health supervision and coherent recovery through the same canonical runtime lifecycle. Installation never enables or starts any unit automatically. See [`docs/persistent-operation.md`](docs/persistent-operation.md).
 
 Physical mode requires two explicitly prepared, dedicated WAN/LAN interfaces that NetworkManager or systemd-networkd does not manage during the test. The WAN can use a static address or an HVR-owned ordinary upstream DHCP lease. DHCP WAN works behind a normal consumer/ISP router: DMZ, bridge, and passthrough modes are not required, and double NAT is a supported baseline.
 

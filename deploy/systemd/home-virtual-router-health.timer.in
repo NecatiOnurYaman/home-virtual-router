@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic Home Virtual Router runtime health check
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=1s
+Unit=home-virtual-router-health.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

@@ -49,13 +49,14 @@ R12 owns only `/run/home-virtual-router/runtime/`: `state.env`, `profile`, `star
 
 Status reports `running`, `stopped`, `degraded`, or `inconsistent` plus each desired subsystem. Check succeeds only for `running`. The core path is topology through DNS. IPFIX, the observability link, and metrics export are telemetry subsystems; absence degrades an otherwise healthy router, while conflicting identity or core damage is inconsistent.
 
-## Persistent systemd operation
+## Persistent systemd operation and supervision
 
-R15 turns the tracked unit into an explicitly installable orchestration layer. Preview it with:
+R15 introduced the explicitly installable orchestration layer; R16 adds a 30-second companion health timer that confirms failures and requests one controlled restart through the same canonical runtime lifecycle. Preview the generated units with:
 
 ```sh
 make systemd-show > /tmp/home-virtual-router.service
+make systemd-health-show
 systemd-analyze verify /tmp/home-virtual-router.service
 ```
 
-Installation, enablement, and startup remain separate operator actions. The unit calls thin wrappers around the same deployment-aware lifecycle scripts and requires a healthy runtime before startup succeeds. Persistent operation is physical-mode only; follow [`persistent-operation.md`](persistent-operation.md) for the NetworkManager policy, safety warnings, complete workflow, and R14 mutual exclusion.
+Installation, enablement, and startup remain separate operator actions. The main unit calls thin wrappers around the deployment-aware lifecycle and requires a healthy runtime before startup succeeds; the companion check does not reimplement component recovery. Persistent operation is physical-mode only; follow [`persistent-operation.md`](persistent-operation.md) for recovery bounds, diagnostics, NetworkManager policy, complete workflow, and R14 mutual exclusion.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render, install, verify, and remove the narrow R15 persistence artifacts."""
+"""Render, install, verify, and remove the narrow persistence artifacts."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ import render_systemd_unit
 import validate_config
 
 UNIT_PATH = Path("etc/systemd/system/home-virtual-router.service")
+HEALTH_UNIT_PATH = Path("etc/systemd/system/home-virtual-router-health.service")
+HEALTH_TIMER_PATH = Path("etc/systemd/system/home-virtual-router-health.timer")
 NM_PATH = Path("etc/NetworkManager/conf.d/90-home-virtual-router-unmanaged.conf")
 AUTHORIZATION = Path("/etc/home-virtual-router/allow-physical-deployment")
 
@@ -21,7 +23,7 @@ def configuration(path: Path) -> dict[str, str]:
     values = validate_config.parse(path)
     validate_config.validate(values)
     if values["DEPLOYMENT_MODE"] != "physical":
-        raise ValueError("R15 persistence requires DEPLOYMENT_MODE=physical")
+        raise ValueError("persistence requires DEPLOYMENT_MODE=physical")
     return values
 
 
@@ -29,9 +31,9 @@ def validate_privileged_inputs(config: Path) -> None:
     for path in (config, AUTHORIZATION):
         mode = path.lstat().st_mode
         if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
-            raise ValueError(f"privileged R15 input is not a regular file: {path}")
+            raise ValueError(f"privileged persistence input is not a regular file: {path}")
         if path.stat().st_uid != 0 or stat.S_IMODE(mode) & 0o022:
-            raise ValueError(f"privileged R15 input must be root-owned and not group/world writable: {path}")
+            raise ValueError(f"privileged persistence input must be root-owned and not group/world writable: {path}")
 
 
 def render_nm(values: dict[str, str]) -> str:
@@ -43,6 +45,8 @@ def artifacts(repository: Path, config: Path) -> dict[Path, tuple[str, int]]:
     values = configuration(config)
     return {
         UNIT_PATH: (render_systemd_unit.render(repository), 0o644),
+        HEALTH_UNIT_PATH: (render_systemd_unit.render_template(repository, "home-virtual-router-health.service"), 0o644),
+        HEALTH_TIMER_PATH: (render_systemd_unit.render_template(repository, "home-virtual-router-health.timer"), 0o644),
         NM_PATH: (render_nm(values), 0o644),
     }
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Home Virtual Router runtime health and recovery
+After=home-virtual-router.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=@HVR_WORKING_DIRECTORY@
+ExecStart=@HVR_HEALTH_CHECK@
+TimeoutStartSec=360

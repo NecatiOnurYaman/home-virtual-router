@@ -28,9 +28,13 @@ r14_require_real_hardware() {
   [ "$DEPLOYMENT_MODE" = physical ] || die "R14 requires DEPLOYMENT_MODE=physical"
   require_physical_authorization
   if command -v systemctl >/dev/null 2>&1; then
-    case "$(systemctl show -p ActiveState --value home-virtual-router.service 2>/dev/null || true)" in
-      active|activating|deactivating) die "home-virtual-router.service is active; stop it before starting or resuming R14 validation" ;;
-    esac
+    local unit state
+    for unit in home-virtual-router.service home-virtual-router-health.timer home-virtual-router-health.service; do
+      state="$(systemctl show -p ActiveState --value "$unit" 2>/dev/null || true)"
+      case "$state" in
+        active|activating|deactivating|reloading) die "$unit is $state; stop persistent HVR supervision before starting or resuming R14 validation" ;;
+      esac
+    done
   fi
 }
 

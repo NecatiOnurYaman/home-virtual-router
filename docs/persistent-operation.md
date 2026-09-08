@@ -1,35 +1,38 @@
-# R15 persistent router operation
+# R16 persistent router operation and supervision
 
-R15 installs a systemd orchestration layer around the existing runtime. It does not duplicate routing, DHCP, DNS, firewall, IPFIX, metrics, ownership, rollback, or locking logic. The unit is `Type=oneshot` with `RemainAfterExit=yes` because the canonical runtime intentionally starts several independently owned background processes and then exits. A successful unit start additionally requires `runtime-check` to pass.
+R16 keeps the R15 `Type=oneshot`/`RemainAfterExit=yes` service and adds a systemd-native health service and timer. The main service still delegates all ownership and convergence to the canonical `runtime-start.sh`, `runtime-check.sh`, and `runtime-stop.sh` lifecycle. The watchdog never repairs or respawns an individual DHCP, DNS, IPFIX, or metrics process.
 
-The conservative `Restart=on-failure` policy retries failed initial control operations after 10 seconds and is rate-limited to three starts per five minutes. It does not monitor every child continuously or restart the router for an ordinary upstream DHCP outage; richer reconciliation/watchdog behavior remains deferred to R16.
+`home-virtual-router-health.timer` runs `home-virtual-router-health.service` about every 30 seconds. A healthy or intentionally inactive router causes no mutation and no routine journal message. Starting, stopping, and reloading states are skipped. A first failed runtime check is confirmed after five seconds; a transient failure that clears causes no recovery. A confirmed failure requests exactly one `systemctl restart home-virtual-router.service`, which performs canonical stop, start, and final health validation. A failed restart remains visible in systemd and journald. The main service retains its limit of three starts per five minutes, so persistent faults cannot create an unbounded restart storm. The timer has `Persistent=false`, so powered-off intervals do not create catch-up checks.
 
 ## Prerequisites and interface ownership
 
-R15 supports `DEPLOYMENT_MODE=physical`. Prepare the root-owned `/etc/home-virtual-router/router.env` and `/etc/home-virtual-router/allow-physical-deployment` exactly as for R13/R14. Configure dedicated `PHYSICAL_WAN_INTERFACE` and `PHYSICAL_LAN_INTERFACE` values. In DHCP WAN mode, HVR owns the WAN DHCP client.
+Persistent operation requires `DEPLOYMENT_MODE=physical`. Prepare the root-owned `/etc/home-virtual-router/router.env` and `/etc/home-virtual-router/allow-physical-deployment` exactly as for R13/R14, with dedicated `PHYSICAL_WAN_INTERFACE` and `PHYSICAL_LAN_INTERFACE` values. In DHCP WAN mode, HVR owns the WAN DHCP client.
 
-Installation generates `/etc/NetworkManager/conf.d/90-home-virtual-router-unmanaged.conf` containing only the two configured interface names. This keeps them outside NetworkManager control after reboot without disabling NetworkManager, changing profiles, or affecting unrelated devices. Installation does not reload or restart NetworkManager because doing so could disrupt the current management connection. Before the first service start, deliberately reload NetworkManager or reboot and verify both interfaces are unmanaged. Existing systemd-networkd configuration must likewise leave them unmanaged.
+Installation generates `/etc/NetworkManager/conf.d/90-home-virtual-router-unmanaged.conf` containing only the two configured interface names. It does not disable NetworkManager, alter unrelated profiles, or reload NetworkManager. Before the first service start, deliberately reload NetworkManager or reboot and verify both deployment interfaces are unmanaged. Existing systemd-networkd configuration must likewise leave them unmanaged.
 
-Use a local console for initial deployment. If `PHYSICAL_MANAGEMENT_INTERFACE_ACK=enp0s1` acknowledges the WAN as the current management path, HVR taking ownership of that interface and replacing its address/default route can terminate an SSH session.
+Use a local console for initial deployment. If `PHYSICAL_MANAGEMENT_INTERFACE_ACK` acknowledges the WAN as the current management path, HVR taking ownership of that interface can terminate an SSH session.
 
 ## Inspect, install, and operate
 
-From the repository checkout on Ubuntu:
+From the repository checkout on Ubuntu, preview all generated units and the interface policy:
 
 ```sh
 make systemd-show
+make systemd-health-show
 sudo python3 router/scripts/persistence.py render-nm "$PWD"
 sudo make systemd-install
 ```
 
-`systemd-install` atomically installs the unit and narrow NetworkManager policy, validates paths, runs `systemctl daemon-reload`, and does **not** enable or start anything. Inspect them with:
+Installation atomically installs the main service, health service, timer, and narrow NetworkManager policy. It validates privileged inputs and paths, calls `systemctl daemon-reload`, and does not start or enable anything. Inspect the installed artifacts with:
 
 ```sh
 sudo systemctl cat home-virtual-router.service
+sudo systemctl cat home-virtual-router-health.service
+sudo systemctl cat home-virtual-router-health.timer
 sudo cat /etc/NetworkManager/conf.d/90-home-virtual-router-unmanaged.conf
 ```
 
-After applying the NetworkManager policy safely (for example, from the local console with `sudo systemctl reload NetworkManager`), confirm the exact WAN/LAN devices are unmanaged with `nmcli device status`, then start HVR:
+After safely applying the NetworkManager policy and verifying both deployment interfaces are unmanaged, start the router and supervision together:
 
 ```sh
 sudo make systemd-start
@@ -37,21 +40,27 @@ sudo make systemd-status
 sudo make runtime-check
 ```
 
-Normal service stop uses the canonical runtime teardown and leaves the installed persistent interface policy in place:
+`systemd-start` starts the main router first and then the timer. If timer startup fails, it stops the main service rather than leaving an unsupervised deployment. `systemd-status` is read-only and reports installation-visible systemd states, enablement, configured interfaces, NetworkManager ownership, dynamic WAN lease details when available, canonical runtime status, and a non-fatal warning when `timedatectl` reports that the host clock is not NTP-synchronized. HVR never changes the clock or NTP configuration.
 
-```sh
-sudo make systemd-stop
-```
-
-Enable boot startup separately:
+Enable both boot startup and health supervision separately:
 
 ```sh
 sudo make systemd-enable
 ```
 
-After an operator-initiated reboot, the dedicated interfaces should remain unmanaged and `home-virtual-router.service` should automatically converge WAN DHCP or static WAN, LAN addressing, forwarding, NAT, firewall, DHCP/DNS, and configured telemetry. The unit deliberately does not require `network-online.target`; HVR acquires its own WAN lease.
+Normal stop prevents watchdog races by stopping the timer, then any in-flight health action, then the main router through canonical teardown:
 
-To remove persistence:
+```sh
+sudo make systemd-stop
+```
+
+Disabling affects future boot activation but does not stop a currently running router:
+
+```sh
+sudo make systemd-disable
+```
+
+To remove persistence safely:
 
 ```sh
 sudo make systemd-stop
@@ -59,19 +68,24 @@ sudo make systemd-disable
 sudo make systemd-uninstall
 ```
 
-Uninstall is idempotent but refuses to remove an active/enabled service, symlinks, non-regular targets, or locally modified generated artifacts. It does not restore NetworkManager profiles or immediately reclaim interfaces; apply the host's intended network configuration deliberately afterward.
+Uninstall is idempotent but refuses while any installed HVR unit is active, while the main service or timer is enabled, or when an installed artifact is a symlink, non-regular file, or differs from its generated content. It does not restore NetworkManager profiles or immediately reclaim interfaces.
 
-## R14 interaction and troubleshooting
+## Recovery, R14, and diagnostics
 
-R14 is an operator-driven acceptance/restoration transaction; R15 is normal deployed operation. R14 refuses to run while the persistent service is active, and the service refuses to start while an R14 checkpoint exists. Finish the active controller instead of deleting ownership state.
+R14 acceptance and persistent operation remain mutually exclusive. R14 refuses while the main service, health timer, or health service is active or transitioning. The persistent service refuses startup while an R14 checkpoint exists, and the health action refuses recovery if one appears. Stop persistent operation before starting R14; never delete ownership or checkpoint state to bypass either controller.
 
-Inspect failures with:
+Inspect a failure or recent recovery with:
 
 ```sh
-sudo systemctl status --no-pager home-virtual-router.service
-sudo journalctl -u home-virtual-router.service -b --no-pager
+sudo make systemd-status
+sudo systemctl status --no-pager home-virtual-router.service home-virtual-router-health.timer home-virtual-router-health.service
+sudo journalctl -u home-virtual-router.service -u home-virtual-router-health.service -b --no-pager
 sudo make runtime-status
 sudo make runtime-check
 ```
 
-Failed initial startup remains a failed unit and retains canonical runtime diagnostics under `/run/home-virtual-router/runtime/`. Explicit restart remains safe through the existing runtime lock and idempotent convergence. R15 does not add automated package installation, configuration migration, continuous child watchdogs, upgrades, HA, or remote management; those are outside this stage and broader production polish belongs to R16.
+The health journal records a confirmed failure and its runtime-check reason, the single recovery request, and recovery success or failure. Successful periodic checks are intentionally silent.
+
+Temporary link loss can make the canonical runtime check fail. The five-second confirmation avoids reacting to a single brief failure. A longer outage may cause one full recovery attempt; if convergence cannot succeed, the main unit remains failed and its existing systemd start limit bounds retry behavior. The DHCP client continues to own normal lease renewal. R16 does not add a WAN failure state machine.
+
+This supervision improves recovery from failures such as an owned dnsmasq, metrics exporter, or pmacctd process dying, because all are evaluated through the same runtime check and reconstructed through the full lifecycle. It does not install packages, migrate configuration, manage NTP, provide external monitoring, or implement high availability/failover. Production operators should still monitor the service and health unit from outside the router.
