@@ -30,6 +30,8 @@ class PersistenceRenderingTests(unittest.TestCase):
         self.assertNotIn("network-online.target", unit)
         self.assertIn(str(ROOT / "router/scripts/service-start.sh"), unit)
         self.assertIn(str(ROOT / "router/scripts/service-stop.sh"), unit)
+        self.assertIn(f"WorkingDirectory={ROOT}", unit)
+        self.assertNotIn(f'WorkingDirectory="{ROOT}"', unit)
         start = (ROOT / "router/scripts/service-start.sh").read_text(encoding="utf-8")
         stop = (ROOT / "router/scripts/service-stop.sh").read_text(encoding="utf-8")
         self.assertIn('lab/scripts/runtime-start.sh"', start)
@@ -46,8 +48,29 @@ class PersistenceRenderingTests(unittest.TestCase):
             )
             rendered = persistence.render_systemd_unit.render(repository)
             resolved = repository.resolve()
-            self.assertIn(f'WorkingDirectory="{resolved}"', rendered)
+            self.assertIn(f'WorkingDirectory={str(resolved).replace(" ", r"\x20")}', rendered)
             self.assertIn(f'ExecStart="{resolved}/router/scripts/service-start.sh"', rendered)
+
+    def test_directive_specific_escaping_handles_quotes_and_backslashes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / 'quoted" path\\part'
+            template = repository / "deploy/systemd"
+            template.mkdir(parents=True)
+            (template / "home-virtual-router.service.in").write_text(
+                (ROOT / "deploy/systemd/home-virtual-router.service.in").read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            rendered = persistence.render_systemd_unit.render(repository)
+            resolved = repository.resolve()
+            self.assertIn("WorkingDirectory=" + persistence.render_systemd_unit.systemd_path_value(str(resolved)), rendered)
+            self.assertIn("ExecStart=" + persistence.render_systemd_unit.systemd_exec_argument(str(resolved / "router/scripts/service-start.sh")), rendered)
+            self.assertIn("Documentation=file://", rendered)
+            self.assertIn("%%22", rendered)
+            self.assertIn("%%5C", rendered)
+
+    def test_control_characters_are_rejected(self) -> None:
+        for character in ("\n", "\r", "\t", chr(127)):
+            with self.subTest(character=repr(character)), self.assertRaisesRegex(ValueError, "control characters"):
+                persistence.render_systemd_unit.systemd_path_value(f"/tmp/hvr{character}path")
 
     def test_networkmanager_policy_is_exact_for_static_and_dhcp(self) -> None:
         for mode in ("static", "dhcp"):
