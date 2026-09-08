@@ -118,6 +118,88 @@ class PhysicalSafetyTests(unittest.TestCase):
         command = f'source "{PHYSICAL_COMMON}"; {definitions}; {function}'
         return subprocess.run(["bash", "-c", command], capture_output=True, text=True, check=False)
 
+    def physical_function(self, name: str, next_name: str) -> str:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        return common[common.index(f"{name}()") : common.index(f"{next_name}()")]
+
+    def test_physical_runtime_directory_is_prepared_before_dhcp_topology_mutation(self) -> None:
+        topology = self.physical_function("physical_topology_enable", "physical_topology_disable")
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "wan-link-owned"
+            harness = f'''set -euo pipefail
+prepared=0
+trace=""
+PHYSICAL_WAN_INTERFACE=wan0
+PHYSICAL_LAN_INTERFACE=lan0
+PHYSICAL_WAN_LINK_OWNED="{marker}"
+PHYSICAL_LAN_LINK_OWNED="{directory}/lan-link-owned"
+PHYSICAL_WAN_ADDRESS_OWNED="{directory}/wan-address-owned"
+PHYSICAL_LAN_ADDRESS_OWNED="{directory}/lan-address-owned"
+PHYSICAL_DEFAULT_ROUTE_OWNED="{directory}/default-route-owned"
+PHYSICAL_WAN_ADDRESS=192.0.2.2
+PHYSICAL_WAN_PREFIX_LENGTH=24
+PHYSICAL_WAN_GATEWAY=192.0.2.1
+ROUTER_LAN=10.0.0.1
+LAN_SUBNET=10.0.0.0/24
+physical_preflight() {{ trace="$trace preflight"; }}
+physical_prepare_runtime_dir() {{ prepared=1; trace="$trace prepare"; }}
+physical_wan_mode() {{ echo dhcp; }}
+physical_write_map() {{ trace="$trace map"; }}
+physical_interface_is_up() {{ [ "$1" = lan0 ]; }}
+physical_start_wan_dhcp() {{ trace="$trace dhcp"; }}
+physical_wan_dhclient_matches() {{ return 1; }}
+physical_stop_wan_dhcp() {{ return 99; }}
+physical_address_exists() {{ return 0; }}
+physical_default_route_exact() {{ return 0; }}
+physical_topology_healthy() {{ return 0; }}
+ip() {{ [ "$prepared" -eq 1 ] || exit 90; trace="$trace ip:$*"; }}
+touch() {{ [ "$prepared" -eq 1 ] || exit 91; trace="$trace touch:$*"; command touch "$@"; }}
+{topology}
+physical_topology_enable
+printf '%s\n' "$trace"
+'''
+            result = subprocess.run(["bash", "-c", harness], capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(marker.exists())
+            self.assertLess(result.stdout.index("prepare"), result.stdout.index("ip:link set dev wan0 up"))
+            self.assertLess(result.stdout.index("prepare"), result.stdout.index("touch:"))
+
+    def test_physical_runtime_directory_rejects_symlink_and_accepts_legitimate_directory(self) -> None:
+        helper = self.physical_function("physical_prepare_runtime_dir", "require_physical_authorization")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            target.mkdir()
+            link = root / "physical"
+            link.symlink_to(target, target_is_directory=True)
+            reject = subprocess.run(
+                ["bash", "-c", f'die() {{ echo "$*" >&2; exit 1; }}; PHYSICAL_RUNTIME_DIR="{link}"; {helper} physical_prepare_runtime_dir'],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(reject.returncode, 0)
+            self.assertIn("not a trusted directory", reject.stderr)
+
+            fresh = root / "fresh"
+            create = subprocess.run(
+                ["bash", "-c", f'die() {{ echo "$*" >&2; return 1; }}; install() {{ for destination; do :; done; command mkdir "$destination"; }}; stat() {{ echo 0:0:750; }}; PHYSICAL_RUNTIME_DIR="{fresh}"; {helper} physical_prepare_runtime_dir'],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(create.returncode, 0, create.stderr)
+            self.assertTrue(fresh.is_dir())
+
+            legitimate = root / "legitimate"
+            legitimate.mkdir()
+            accept = subprocess.run(
+                ["bash", "-c", f'die() {{ echo "$*" >&2; return 1; }}; install() {{ exit 92; }}; stat() {{ echo 0:0:750; }}; PHYSICAL_RUNTIME_DIR="{legitimate}"; {helper} physical_prepare_runtime_dir; physical_prepare_runtime_dir'],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(accept.returncode, 0, accept.stderr)
+
+    def test_static_topology_keeps_map_before_interface_mutation(self) -> None:
+        topology = self.physical_function("physical_topology_enable", "physical_topology_disable")
+        self.assertLess(topology.index("physical_prepare_runtime_dir"), topology.index("physical_write_map"))
+        self.assertLess(topology.index("physical_write_map"), topology.index('ip link set dev "$PHYSICAL_WAN_INTERFACE" up'))
+
     def test_r14_commands_are_explicit_host_interface_only(self) -> None:
         common = HARDWARE_COMMON.read_text(encoding="utf-8")
         check = HARDWARE_CHECK.read_text(encoding="utf-8")

@@ -35,6 +35,17 @@ readonly PHYSICAL_WAN_DHCLIENT_HOOK_LOG="$PHYSICAL_WAN_DHCP_DIR/dhclient-hook.lo
 readonly PHYSICAL_WAN_DHCP_STATE="$PHYSICAL_WAN_DHCP_DIR/state.env"
 readonly PHYSICAL_WAN_DHCP_INTERFACE_FILE="$PHYSICAL_WAN_DHCP_DIR/interface"
 
+physical_prepare_runtime_dir() {
+  if [ -e "$PHYSICAL_RUNTIME_DIR" ] || [ -L "$PHYSICAL_RUNTIME_DIR" ]; then
+    [ -d "$PHYSICAL_RUNTIME_DIR" ] && [ ! -L "$PHYSICAL_RUNTIME_DIR" ] ||
+      die "physical runtime path is not a trusted directory: $PHYSICAL_RUNTIME_DIR"
+  else
+    install -d -o 0 -g 0 -m 0750 "$PHYSICAL_RUNTIME_DIR"
+  fi
+  [ "$(stat -c %u:%g:%a "$PHYSICAL_RUNTIME_DIR" 2>/dev/null)" = 0:0:750 ] ||
+    die "physical runtime directory must be root:root mode 0750: $PHYSICAL_RUNTIME_DIR"
+}
+
 require_physical_authorization() {
   require_linux || return 1
   [ "$DEPLOYMENT_MODE" = "physical" ] || die "DEPLOYMENT_MODE must be physical"
@@ -338,7 +349,7 @@ physical_prepare_wan_dhcp_runtime() {
   local dhclient_source
   dhclient_source="$(command -v dhclient)" || die "ISC dhclient is required for PHYSICAL_WAN_MODE=dhcp"
   case "$dhclient_source" in /sbin/dhclient|/usr/sbin/dhclient) ;; *) die "untrusted dhclient path: $dhclient_source" ;; esac
-  install -d -o 0 -g 0 -m 0750 "$PHYSICAL_RUNTIME_DIR"
+  physical_prepare_runtime_dir
   install -d -o 0 -g 0 -m 0700 "$PHYSICAL_WAN_DHCP_DIR"
   install -o 0 -g 0 -m 0755 "$dhclient_source" "$PHYSICAL_WAN_DHCLIENT_BINARY"
   install -o 0 -g 0 -m 0700 "$HVR_REPO_DIR/physical/scripts/physical-wan-dhclient-hook.sh" "$PHYSICAL_WAN_DHCLIENT_HOOK"
@@ -448,7 +459,7 @@ physical_preflight() {
 }
 
 physical_write_map() {
-  install -d -m 0750 -o 0 -g 0 "$PHYSICAL_RUNTIME_DIR"
+  physical_prepare_runtime_dir
   physical_render_map > "$PHYSICAL_MAP_FILE"
   chmod 0640 "$PHYSICAL_MAP_FILE"
 }
@@ -504,6 +515,7 @@ physical_recover_dhcp_disable() {
 
 physical_topology_enable() {
   physical_preflight
+  physical_prepare_runtime_dir
   [ "$(physical_wan_mode)" != static ] || physical_write_map
   if ! physical_interface_is_up "$PHYSICAL_WAN_INTERFACE"; then ip link set dev "$PHYSICAL_WAN_INTERFACE" up; touch "$PHYSICAL_WAN_LINK_OWNED"; fi
   if [ "$(physical_wan_mode)" = dhcp ]; then
@@ -542,7 +554,7 @@ physical_topology_disable() {
 physical_routing_healthy() { [ "$(sysctl -n net.ipv4.ip_forward)" = 1 ]; }
 physical_routing_absent() { [ ! -e "$PHYSICAL_FORWARDING_ORIGINAL" ]; }
 physical_routing_enable() {
-  install -d -m 0750 -o 0 -g 0 "$PHYSICAL_RUNTIME_DIR"
+  physical_prepare_runtime_dir
   sysctl -n net.ipv4.ip_forward > "$PHYSICAL_FORWARDING_ORIGINAL"
   chmod 0640 "$PHYSICAL_FORWARDING_ORIGINAL"
   [ "$(cat "$PHYSICAL_FORWARDING_ORIGINAL")" = 1 ] || sysctl -q -w net.ipv4.ip_forward=1
