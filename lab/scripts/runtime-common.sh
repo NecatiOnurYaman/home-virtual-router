@@ -221,7 +221,7 @@ runtime_disable_stage() {
 runtime_recover_disable_stage() {
   [ "$DEPLOYMENT_MODE" = physical ] || die "recovery teardown is supported only for physical deployment"
   case "$1" in
-    dns|dhcp) "$HVR_REPO_DIR/physical/scripts/physical-stage.sh" "$1" recover-disable ;;
+    firewall|dns|dhcp) "$HVR_REPO_DIR/physical/scripts/physical-stage.sh" "$1" recover-disable ;;
     *) runtime_disable_stage "$1" ;;
   esac
 }

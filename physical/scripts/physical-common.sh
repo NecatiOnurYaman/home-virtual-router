@@ -483,6 +483,7 @@ physical_stage_teardown_resumable() {
   case "$1" in
     topology) [ -r "$PHYSICAL_MAP_FILE" ] && physical_map_matches_live_config ;;
     routing) [ -r "$PHYSICAL_FORWARDING_ORIGINAL" ] ;;
+    firewall) physical_firewall_recovery_safe ;;
     dhcp)
       [ -f "$DNSMASQ_CONFIG" ] && [ ! -L "$DNSMASQ_CONFIG" ] &&
         [ "$(stat -c %u:%a "$DNSMASQ_CONFIG")" = 0:644 ] && physical_dhcp_config_healthy &&
@@ -568,12 +569,17 @@ physical_routing_disable() {
   rm -f -- "$PHYSICAL_FORWARDING_ORIGINAL"
 }
 
-physical_docker_forward_shape_present() {
-  local forward
+physical_docker_forward_policy() {
+  local forward hook_count jump_count policy
   nft list table ip filter >/dev/null 2>&1 && nft list chain ip filter DOCKER-USER >/dev/null 2>&1 || return 1
   forward="$(nft list chain ip filter FORWARD 2>/dev/null)" || return 1
-  printf '%s\n' "$forward" | grep -F 'type filter hook forward priority filter; policy drop;' >/dev/null &&
-    printf '%s\n' "$forward" | grep -F 'jump DOCKER-USER' >/dev/null
+  hook_count="$(printf '%s\n' "$forward" | grep -F -c 'type filter hook forward priority filter; policy ' || true)"
+  jump_count="$(printf '%s\n' "$forward" | grep -F -c 'jump DOCKER-USER' || true)"
+  [ "$hook_count" -eq 1 ] && [ "$jump_count" -eq 1 ] || return 1
+  if printf '%s\n' "$forward" | grep -F 'type filter hook forward priority filter; policy accept;' >/dev/null; then policy=accept
+  elif printf '%s\n' "$forward" | grep -F 'type filter hook forward priority filter; policy drop;' >/dev/null; then policy=drop
+  else return 1; fi
+  printf '%s\n' "$policy"
 }
 
 physical_relevant_foreign_forward_hook_count() {
@@ -590,11 +596,12 @@ physical_relevant_foreign_forward_hook_count() {
 }
 
 physical_host_forward_conflict_mode() {
-  local foreign
+  local foreign policy
   foreign="$(physical_relevant_foreign_forward_hook_count)" || { printf 'unsupported\n'; return; }
   case "$foreign" in *[!0-9]*|'') printf 'unsupported\n'; return ;; esac
   if [ "$foreign" -eq 0 ]; then printf 'none\n'
-  elif [ "$foreign" -eq 1 ] && physical_docker_forward_shape_present; then printf 'docker-user\n'
+  elif [ "$foreign" -eq 1 ] && policy="$(physical_docker_forward_policy)"; then
+    case "$policy" in accept) printf 'docker-accept\n' ;; drop) printf 'docker-user\n' ;; *) printf 'unsupported\n' ;; esac
   else printf 'unsupported\n'
   fi
 }
@@ -665,7 +672,7 @@ physical_firewall_healthy() {
   filter_rules_exist || return 1
   mode="$(physical_host_forward_conflict_mode)"
   case "$mode" in
-    none) [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ ! -L "$PHYSICAL_HOST_FORWARD_OWNED" ] && physical_host_forward_rules_absent ;;
+    none|docker-accept) [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ ! -L "$PHYSICAL_HOST_FORWARD_OWNED" ] && physical_host_forward_rules_absent ;;
     docker-user) physical_host_forward_ownership_healthy && physical_host_forward_rules_healthy ;;
     *) return 1 ;;
   esac
@@ -675,7 +682,8 @@ physical_firewall_enable() {
   local mode
   mode="$(physical_host_forward_conflict_mode)"
   case "$mode" in
-    none) physical_host_forward_rules_absent || die "unexpected HVR host-forward compatibility state" ;;
+    none|docker-accept) [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ ! -L "$PHYSICAL_HOST_FORWARD_OWNED" ] &&
+      physical_host_forward_rules_absent || die "unexpected HVR host-forward compatibility state" ;;
     docker-user) physical_enable_host_forward_rules ;;
     *) die "unsupported host forwarding firewall can independently drop HVR traffic" ;;
   esac
@@ -695,6 +703,24 @@ physical_firewall_disable() {
   physical_firewall_healthy || die "physical firewall ownership is inconsistent"
   mode="$(physical_host_forward_conflict_mode)"
   [ "$mode" != docker-user ] || physical_disable_host_forward_rules
+  delete_project_filter_table
+}
+
+physical_firewall_recovery_safe() {
+  local mode
+  filter_rules_exist || return 1
+  mode="$(physical_host_forward_conflict_mode)"
+  case "$mode" in docker-accept|docker-user) ;; *) return 1 ;; esac
+  if [ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ ! -L "$PHYSICAL_HOST_FORWARD_OWNED" ]; then
+    physical_host_forward_rules_absent
+  else
+    physical_host_forward_ownership_healthy && physical_host_forward_rules_healthy
+  fi
+}
+
+physical_recover_firewall_disable() {
+  physical_firewall_recovery_safe || die "physical firewall recovery ownership is inconsistent"
+  if physical_host_forward_ownership_healthy; then physical_disable_host_forward_rules; fi
   delete_project_filter_table
 }
 

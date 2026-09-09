@@ -1579,7 +1579,7 @@ nft(){
     "list ruleset") printf '%s\n' "$RULESET" ;;
     "list table ip filter") [ "$DOCKER" = 1 ] ;;
     "list chain ip filter DOCKER-USER") [ "$DOCKER" = 1 ] ;;
-    "list chain ip filter FORWARD") [ "$DOCKER" = 1 ] && printf '%s\n' 'type filter hook forward priority filter; policy drop;' 'jump DOCKER-USER' ;;
+    "list chain ip filter FORWARD") [ "$DOCKER" = 1 ] && printf '%s\n' "type filter hook forward priority filter; policy $POLICY;" 'jump DOCKER-USER' ;;
     *) return 1 ;;
   esac
 }
@@ -1612,6 +1612,7 @@ nft(){
         scenarios = (
             ("no hooks", "", 0, "none"),
             ("IPv4 Docker", ip_docker, 1, "docker-user"),
+            ("IPv4 Docker accept", ip_docker.replace("policy drop", "policy accept"), 1, "docker-accept"),
             ("IPv4 and IPv6 Docker", ip_docker + "\n" + ip6_docker, 1, "docker-user"),
             ("IPv6 only", ip6_docker, 0, "none"),
             ("foreign inet", foreign_inet, 0, "unsupported"),
@@ -1620,14 +1621,15 @@ nft(){
         )
         for label, ruleset, docker, expected in scenarios:
             with self.subTest(label=label):
-                definitions = common + f'DOCKER={docker}; RULESET=$\'{ruleset}\''
+                policy = "accept" if label == "IPv4 Docker accept" else "drop"
+                definitions = common + f'DOCKER={docker}; POLICY={policy}; RULESET=$\'{ruleset}\''
                 result = self.run_function(definitions, "physical_host_forward_conflict_mode")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.strip(), expected)
 
     def test_host_forward_compatibility_rules_are_exact_owned_and_idempotent(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
-        start = common.index("physical_docker_forward_shape_present()")
+        start = common.index("physical_docker_forward_policy()")
         end = common.index("physical_dnsmasq_process_healthy()")
         compatibility = common[start:end]
         for marker in ("hvr-r5-host-forward-lan-wan", "hvr-r5-host-forward-wan-lan"):
@@ -1642,7 +1644,7 @@ nft(){
         self.assertIn("physical_host_forward_rules_absent || die", compatibility)
         self.assertIn("grep -c .", compatibility)
         self.assertIn('nft delete rule ip filter DOCKER-USER handle "$handle"', compatibility)
-        for forbidden in ("flush ruleset", "flush chain", "iptables -F", "policy accept", "delete chain ip filter DOCKER-USER"):
+        for forbidden in ("flush ruleset", "flush chain", "iptables -F", "nft set", "delete chain ip filter DOCKER-USER"):
             self.assertNotIn(forbidden, compatibility)
 
     def test_host_forward_health_requires_both_exact_rules_and_ignores_foreign_rule(self) -> None:
@@ -1678,6 +1680,59 @@ nft() {{ printf '%s\\n' "$*"; }}
         self.assertEqual(deleted.returncode, 0, deleted.stderr)
         self.assertEqual(deleted.stdout.strip(), "delete rule ip filter DOCKER-USER handle 10")
         self.assertNotIn("handle 99", deleted.stdout)
+
+    def test_docker_modes_require_their_exact_compatibility_state(self) -> None:
+        health = self.physical_function("physical_firewall_healthy", "physical_firewall_enable")
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "host-forward-owned"
+            base = f'''PHYSICAL_HOST_FORWARD_OWNED="{marker}"
+filter_rules_exist() {{ return 0; }}
+physical_host_forward_rules_absent() {{ [ "${{RULES:-absent}}" = absent ]; }}
+physical_host_forward_ownership_healthy() {{ [ -f "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ "${{OWNER:-bad}}" = good ]; }}
+physical_host_forward_rules_healthy() {{ [ "${{RULES:-absent}}" = exact ]; }}
+{health}
+'''
+            accept = subprocess.run(["bash", "-c", base + "physical_host_forward_conflict_mode(){ echo docker-accept; }; physical_firewall_healthy"], check=False)
+            self.assertEqual(accept.returncode, 0)
+            marker.touch()
+            accept_owned = subprocess.run(["bash", "-c", base + "OWNER=good; RULES=exact; physical_host_forward_conflict_mode(){ echo docker-accept; }; physical_firewall_healthy"], check=False)
+            self.assertNotEqual(accept_owned.returncode, 0)
+            docker_user = subprocess.run(["bash", "-c", base + "OWNER=good; RULES=exact; physical_host_forward_conflict_mode(){ echo docker-user; }; physical_firewall_healthy"], check=False)
+            self.assertEqual(docker_user.returncode, 0)
+            marker.unlink()
+            docker_user_absent = subprocess.run(["bash", "-c", base + "physical_host_forward_conflict_mode(){ echo docker-user; }; physical_firewall_healthy"], check=False)
+            self.assertNotEqual(docker_user_absent.returncode, 0)
+
+    def test_firewall_recovery_accepts_only_absent_or_exact_owned_compatibility(self) -> None:
+        common = PHYSICAL_COMMON.read_text(encoding="utf-8")
+        recovery = common[common.index("physical_firewall_recovery_safe()") : common.index("physical_dnsmasq_process_healthy()")]
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "host-forward-owned"
+            base = f'''PHYSICAL_HOST_FORWARD_OWNED="{marker}"
+trace=""
+filter_rules_exist() {{ return 0; }}
+physical_host_forward_conflict_mode() {{ echo "${{MODE:-docker-accept}}"; }}
+physical_host_forward_rules_absent() {{ [ "${{RULES:-absent}}" = absent ]; }}
+physical_host_forward_ownership_healthy() {{ [ -f "$PHYSICAL_HOST_FORWARD_OWNED" ] && [ "${{OWNER:-bad}}" = good ]; }}
+physical_host_forward_rules_healthy() {{ [ "${{RULES:-absent}}" = exact ]; }}
+physical_disable_host_forward_rules() {{ trace="$trace compatibility"; }}
+delete_project_filter_table() {{ trace="$trace hvr-table"; }}
+die() {{ echo "$*" >&2; return 1; }}
+{recovery}
+'''
+            absent = subprocess.run(["bash", "-c", base + "physical_recover_firewall_disable; echo \"$trace\""], capture_output=True, text=True, check=False)
+            self.assertEqual(absent.returncode, 0, absent.stderr)
+            self.assertEqual(absent.stdout.strip(), "hvr-table")
+
+            marker.touch()
+            exact = subprocess.run(["bash", "-c", base + "OWNER=good; RULES=exact; MODE=docker-user; physical_recover_firewall_disable; echo \"$trace\""], capture_output=True, text=True, check=False)
+            self.assertEqual(exact.returncode, 0, exact.stderr)
+            self.assertEqual(exact.stdout.strip(), "compatibility hvr-table")
+
+            for label, settings in (("partial", "OWNER=good; RULES=partial"), ("bad marker", "OWNER=bad; RULES=exact"), ("unsupported", "MODE=unsupported")):
+                with self.subTest(label=label):
+                    result = subprocess.run(["bash", "-c", base + settings + "; physical_firewall_recovery_safe"], check=False)
+                    self.assertNotEqual(result.returncode, 0)
 
     def test_forwarding_address_route_and_link_changes_are_ownership_marked(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")

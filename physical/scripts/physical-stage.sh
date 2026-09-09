@@ -49,6 +49,7 @@ case "$stage:$action" in
   nat:disable) nat_rule_exists || die "physical NAT ownership is inconsistent"; delete_project_nat_table ;;
   firewall:enable) nat_rule_exists || die "physical NAT must be healthy"; filter_table_exists && die "project firewall table already exists"; physical_firewall_enable ;;
   firewall:disable) physical_firewall_disable ;;
+  firewall:recover-disable) physical_recover_firewall_disable ;;
   dhcp:enable) physical_firewall_healthy || die "physical firewall must be healthy"; physical_dhcp_enable ;;
   dhcp:disable) physical_dhcp_disable ;;
   dns:enable) physical_dns_enable ;;
