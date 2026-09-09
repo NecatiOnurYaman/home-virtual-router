@@ -1703,6 +1703,26 @@ physical_host_forward_rules_healthy() {{ [ "${{RULES:-absent}}" = exact ]; }}
             docker_user_absent = subprocess.run(["bash", "-c", base + "physical_host_forward_conflict_mode(){ echo docker-user; }; physical_firewall_healthy"], check=False)
             self.assertNotEqual(docker_user_absent.returncode, 0)
 
+    def test_firewall_remains_healthy_when_none_transitions_to_docker_accept(self) -> None:
+        health = self.physical_function("physical_firewall_healthy", "physical_firewall_enable")
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "host-forward-owned"
+            script = f'''PHYSICAL_HOST_FORWARD_OWNED="{marker}"
+MODE=none
+filter_rules_exist() {{ return 0; }}
+physical_host_forward_conflict_mode() {{ echo "$MODE"; }}
+physical_host_forward_rules_absent() {{ return 0; }}
+physical_host_forward_ownership_healthy() {{ return 1; }}
+physical_host_forward_rules_healthy() {{ return 1; }}
+{health}
+physical_firewall_healthy || exit 1
+MODE=docker-accept
+physical_firewall_healthy || exit 1
+[ ! -e "$PHYSICAL_HOST_FORWARD_OWNED" ]
+'''
+            result = subprocess.run(["bash", "-c", script], check=False)
+            self.assertEqual(result.returncode, 0)
+
     def test_firewall_recovery_accepts_only_absent_or_exact_owned_compatibility(self) -> None:
         common = PHYSICAL_COMMON.read_text(encoding="utf-8")
         recovery = common[common.index("physical_firewall_recovery_safe()") : common.index("physical_dnsmasq_process_healthy()")]
