@@ -51,16 +51,61 @@ def parse_neighbors(text: str) -> dict[str, str]:
         rows = json.loads(text)
     except (json.JSONDecodeError, TypeError):
         return {}
-    return {row["dst"]: row.get("state", "UNKNOWN") for row in rows if isinstance(row, dict) and "dst" in row}
+    neighbors: dict[str, str] = {}
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict) or "dst" not in row:
+            continue
+        raw_state = row.get("state", "UNKNOWN")
+        state = ",".join(str(item) for item in raw_state) if isinstance(raw_state, list) else str(raw_state)
+        neighbors[str(row["dst"])] = state
+    return neighbors
 
 
-def aggregate(checks: list[HealthState]) -> HealthState:
-    active = [state for state in checks if state not in {HealthState.DISABLED, HealthState.NOT_CONFIGURED}]
-    if any(state == HealthState.FAILED for state in active):
+def parse_ipv4_addresses(text: str) -> tuple[str, ...]:
+    try:
+        rows = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return ()
+    addresses: list[str] = []
+    for row in rows if isinstance(rows, list) else ():
+        for address in row.get("addr_info", ()) if isinstance(row, dict) else ():
+            if address.get("family") == "inet" and isinstance(address.get("local"), str) and isinstance(address.get("prefixlen"), int):
+                addresses.append(f'{address["local"]}/{address["prefixlen"]}')
+    return tuple(sorted(set(addresses)))
+
+
+def neighbor_check(target: str, state: str | None) -> Check:
+    if target == "none":
+        return Check(HealthState.NOT_CONFIGURED)
+    normalized = state.upper() if state else None
+    states = set(normalized.split(",")) if normalized else set()
+    if states & {"FAILED", "INCOMPLETE"}:
+        return Check(HealthState.DEGRADED, f"nud={normalized}")
+    if states and states <= {"REACHABLE", "STALE", "DELAY", "PROBE"}:
+        return Check(HealthState.HEALTHY, f"nud={normalized}")
+    if normalized is None:
+        return Check(HealthState.DEGRADED, "neighbor entry missing after probe")
+    return Check(HealthState.UNKNOWN, f"nud={normalized}")
+
+
+def address_check(expected: str | None, observed: tuple[str, ...]) -> Check:
+    if expected is None:
+        return Check(HealthState.UNKNOWN, "expected address unavailable")
+    if expected in observed:
+        return Check(HealthState.HEALTHY, f"expected={expected}")
+    return Check(HealthState.FAILED, f"expected address is not installed: {expected}")
+
+
+def aggregate(core_checks: list[HealthState], ancillary_checks: list[HealthState] | None = None) -> HealthState:
+    core = [state for state in core_checks if state not in {HealthState.DISABLED, HealthState.NOT_CONFIGURED}]
+    ancillary = [state for state in (ancillary_checks or []) if state not in {HealthState.DISABLED, HealthState.NOT_CONFIGURED}]
+    if any(state == HealthState.FAILED for state in core):
         return HealthState.FAILED
-    if any(state in {HealthState.DEGRADED, HealthState.UNKNOWN} for state in active):
+    if any(state in {HealthState.DEGRADED, HealthState.UNKNOWN} for state in core) or any(
+        state in {HealthState.FAILED, HealthState.DEGRADED, HealthState.UNKNOWN} for state in ancillary
+    ):
         return HealthState.DEGRADED
-    return HealthState.HEALTHY if active else HealthState.UNKNOWN
+    return HealthState.HEALTHY if core or ancillary else HealthState.UNKNOWN
 
 
 class Collector:
@@ -132,6 +177,10 @@ class Collector:
         result = self.command(["ping", "-n", "-c", "1", "-W", "1", "-I", interface, target])
         return Check(HealthState.HEALTHY if result.returncode == 0 else HealthState.DEGRADED, f"target={target}")
 
+    def addresses(self, interface: str) -> tuple[str, ...]:
+        result = self.command(["ip", "-j", "-4", "addr", "show", "dev", interface])
+        return parse_ipv4_addresses(result.stdout) if result.returncode == 0 else ()
+
     def collect(self) -> Snapshot:
         timestamp = self.now()
         try:
@@ -164,9 +213,21 @@ class Collector:
             else:
                 services[name] = Check(HealthState.FAILED, "runtime integrity check failed")
 
+        core_stage_states: list[HealthState] = []
+        for name in ("topology", "routing", "nat", "firewall", "dhcp", "dns"):
+            if name not in stage_states:
+                core_stage_states.append(HealthState.UNKNOWN)
+            elif stage_states[name] == 0:
+                core_stage_states.append(HealthState.HEALTHY)
+            elif stage_states[name] == 1 and name not in owned:
+                core_stage_states.append(HealthState.UNKNOWN)
+            else:
+                core_stage_states.append(HealthState.FAILED)
+        ancillary_service_states = [services[name].state for name in ("ipfix", "metrics-export")]
+
         if self.config["DEPLOYMENT_MODE"] != "physical":
             unavailable = {"state": HealthState.NOT_CONFIGURED, "detail": "physical deployment only"}
-            return Snapshot(timestamp.isoformat().replace("+00:00", "Z"), aggregate([item.state for item in services.values()]), runtime, unavailable, unavailable, services, ())
+            return Snapshot(timestamp.isoformat().replace("+00:00", "Z"), aggregate(core_stage_states, ancillary_service_states), runtime, unavailable, unavailable, services, ())
 
         wan_mode = self.config.get("PHYSICAL_WAN_MODE", "static")
         if wan_mode == "dhcp":
@@ -182,24 +243,29 @@ class Collector:
             prefix = self.config.get("PHYSICAL_WAN_PREFIX_LENGTH")
             gateway = self.config.get("PHYSICAL_WAN_GATEWAY")
         wan = self.link(self.config["PHYSICAL_WAN_INTERFACE"])
-        wan.update({"mode": wan_mode, "effective_ipv4": f"{address}/{prefix}" if address and prefix else None, "effective_gateway": gateway})
+        expected_wan = f"{address}/{prefix}" if address and prefix else None
+        observed_wan = self.addresses(self.config["PHYSICAL_WAN_INTERFACE"])
+        wan.update({"mode": wan_mode, "effective_ipv4": expected_wan, "observed_ipv4": observed_wan, "ipv4_health": address_check(expected_wan, observed_wan), "effective_gateway": gateway})
         wan["gateway_reachability"] = self.probe(gateway, self.config["PHYSICAL_WAN_INTERFACE"]) if gateway else Check(HealthState.UNKNOWN, "effective gateway unavailable")
         wan["internet_reachability"] = self.probe(self.config.get("INTERNET_HEALTH_TARGET", "none"), self.config["PHYSICAL_WAN_INTERFACE"])
 
         lan = self.link(self.config["PHYSICAL_LAN_INTERFACE"])
-        lan.update({"expected_ipv4": f'{self.config["ROUTER_LAN"]}/{self.config["LAN_SUBNET"].split("/")[1]}'})
+        expected_lan = f'{self.config["ROUTER_LAN"]}/{self.config["LAN_SUBNET"].split("/")[1]}'
+        observed_lan = self.addresses(self.config["PHYSICAL_LAN_INTERFACE"])
+        lan.update({"expected_ipv4": expected_lan, "observed_ipv4": observed_lan, "ipv4_health": address_check(expected_lan, observed_lan)})
         lan_target = self.config.get("LAN_HEALTH_TARGET", "none")
         lan["target"] = lan_target
         lan["icmp"] = self.probe(lan_target, self.config["PHYSICAL_LAN_INTERFACE"])
         neighbors_result = self.command(["ip", "-j", "neigh", "show", "dev", self.config["PHYSICAL_LAN_INTERFACE"]])
         neighbors = parse_neighbors(neighbors_result.stdout) if neighbors_result.returncode == 0 else {}
         lan["target_neighbor_state"] = neighbors.get(lan_target) if lan_target != "none" else None
+        lan["neighbor_reachability"] = neighbor_check(lan_target, lan["target_neighbor_state"])
 
         try:
             clients = parse_leases(self.read_text(self.lease_file), int(timestamp.timestamp()))
         except OSError:
             clients = ()
         clients = tuple(Client(item.hostname, item.ipv4, item.mac, item.lease_expiry, item.lease_expired, neighbors.get(item.ipv4)) for item in clients)
-        operational = [item.state for item in services.values()]
-        operational.extend((wan["health"].state, lan["health"].state, wan["gateway_reachability"].state, wan["internet_reachability"].state, lan["icmp"].state))
-        return Snapshot(timestamp.isoformat().replace("+00:00", "Z"), aggregate(operational), runtime, wan, lan, services, clients)
+        core_operational = core_stage_states + [wan["health"].state, wan["ipv4_health"].state, lan["health"].state, lan["ipv4_health"].state]
+        ancillary_operational = ancillary_service_states + [wan["gateway_reachability"].state, wan["internet_reachability"].state, lan["icmp"].state, lan["neighbor_reachability"].state]
+        return Snapshot(timestamp.isoformat().replace("+00:00", "Z"), aggregate(core_operational, ancillary_operational), runtime, wan, lan, services, clients)
