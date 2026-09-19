@@ -12,17 +12,20 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY))
 
 from router.management.collector import Collector
+from router.management.config import load as load_management_config
 from router.scripts import validate_config
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path("/etc/home-virtual-router/router.env"))
+    parser.add_argument("--management-config", type=Path, default=Path("/etc/home-virtual-router/management.env"))
     args = parser.parse_args()
     try:
         values = validate_config.parse(args.config)
         validate_config.validate(values)
-        snapshot = Collector(values).collect()
+        management = load_management_config(args.management_config, values)
+        snapshot = Collector(values, management).collect()
     except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

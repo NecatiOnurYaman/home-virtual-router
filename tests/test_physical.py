@@ -37,27 +37,6 @@ class PhysicalConfigTests(unittest.TestCase):
         validate_config.validate(values)
         self.assertEqual(values["DEPLOYMENT_MODE"], "physical")
         self.assertEqual(values["PHYSICAL_WAN_MODE"], "static")
-        self.assertEqual(values["LAN_HEALTH_TARGET"], "none")
-        self.assertEqual(values["INTERNET_HEALTH_TARGET"], "none")
-
-    def test_optional_health_targets_are_strict_and_backward_compatible(self) -> None:
-        values = self.values()
-        del values["LAN_HEALTH_TARGET"]
-        del values["INTERNET_HEALTH_TARGET"]
-        validate_config.validate(values)
-        for key in ("LAN_HEALTH_TARGET", "INTERNET_HEALTH_TARGET"):
-            invalid = self.values()
-            invalid[key] = "example.test"
-            with self.assertRaisesRegex(ValueError, f"{key} must be none or an IPv4 address"):
-                validate_config.validate(invalid)
-        outside = self.values()
-        outside["LAN_HEALTH_TARGET"] = "192.0.2.10"
-        with self.assertRaisesRegex(ValueError, "within LAN_SUBNET"):
-            validate_config.validate(outside)
-        router = self.values()
-        router["LAN_HEALTH_TARGET"] = router["ROUTER_LAN"]
-        with self.assertRaisesRegex(ValueError, "must not equal ROUTER_LAN"):
-            validate_config.validate(router)
 
     def test_physical_wan_modes_preserve_legacy_static_and_accept_dhcp(self) -> None:
         explicit_static = self.values()

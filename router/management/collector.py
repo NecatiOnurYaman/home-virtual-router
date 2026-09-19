@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 from typing import Callable, Mapping
 
+from router.management.config import ManagementConfig
 from router.management.models import Check, Client, HealthState, Snapshot
 from router.runtime.state import StateError, read as read_runtime_state
 
@@ -111,7 +112,8 @@ def aggregate(core_checks: list[HealthState], ancillary_checks: list[HealthState
 class Collector:
     def __init__(
         self,
-        config: Mapping[str, str],
+        router_config: Mapping[str, str],
+        management_config: ManagementConfig,
         *,
         run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
         read_text: Callable[[Path], str] | None = None,
@@ -121,7 +123,8 @@ class Collector:
         wan_dhcp_state: Path = WAN_DHCP_STATE,
         lease_file: Path = LEASE_FILE,
     ) -> None:
-        self.config = config
+        self.router_config = router_config
+        self.management_config = management_config
         self.run = run
         self.read_text = read_text or (lambda path: path.read_text(encoding="utf-8"))
         self.now = now or (lambda: datetime.now(UTC))
@@ -194,13 +197,13 @@ class Collector:
             }
             owned = set(recorded.owned_stages)
         except StateError:
-            runtime = {"deployment_mode": self.config["DEPLOYMENT_MODE"], "profile": self.config["TELEMETRY_MODE"], "recorded_status": "absent", "started_at": None, "owned_stages": []}
+            runtime = {"deployment_mode": self.router_config["DEPLOYMENT_MODE"], "profile": self.router_config["TELEMETRY_MODE"], "recorded_status": "absent", "started_at": None, "owned_stages": []}
             owned = set()
 
         stage_states = self.stages()
         runtime["stage_integrity"] = {name: {0: "healthy", 1: "absent", 2: "inconsistent"}[code] for name, code in sorted(stage_states.items())}
         services: dict[str, Check] = {}
-        configured = {"nat": True, "firewall": True, "dhcp": True, "dns": True, "ipfix": self.config["IPFIX_ENABLED"] == "1", "metrics-export": self.config["METRICS_EXPORT_ENABLED"] == "1"}
+        configured = {"nat": True, "firewall": True, "dhcp": True, "dns": True, "ipfix": self.router_config["IPFIX_ENABLED"] == "1", "metrics-export": self.router_config["METRICS_EXPORT_ENABLED"] == "1"}
         for name, enabled in configured.items():
             if not enabled:
                 services[name] = Check(HealthState.DISABLED)
@@ -225,11 +228,11 @@ class Collector:
                 core_stage_states.append(HealthState.FAILED)
         ancillary_service_states = [services[name].state for name in ("ipfix", "metrics-export")]
 
-        if self.config["DEPLOYMENT_MODE"] != "physical":
+        if self.router_config["DEPLOYMENT_MODE"] != "physical":
             unavailable = {"state": HealthState.NOT_CONFIGURED, "detail": "physical deployment only"}
             return Snapshot(timestamp.isoformat().replace("+00:00", "Z"), aggregate(core_stage_states, ancillary_service_states), runtime, unavailable, unavailable, services, ())
 
-        wan_mode = self.config.get("PHYSICAL_WAN_MODE", "static")
+        wan_mode = self.router_config.get("PHYSICAL_WAN_MODE", "static")
         if wan_mode == "dhcp":
             try:
                 effective = parse_key_values(self.read_text(self.wan_dhcp_state))
@@ -239,24 +242,24 @@ class Collector:
             prefix = effective.get("WAN_PREFIX_LENGTH")
             gateway = effective.get("WAN_GATEWAY")
         else:
-            address = self.config.get("PHYSICAL_WAN_ADDRESS")
-            prefix = self.config.get("PHYSICAL_WAN_PREFIX_LENGTH")
-            gateway = self.config.get("PHYSICAL_WAN_GATEWAY")
-        wan = self.link(self.config["PHYSICAL_WAN_INTERFACE"])
+            address = self.router_config.get("PHYSICAL_WAN_ADDRESS")
+            prefix = self.router_config.get("PHYSICAL_WAN_PREFIX_LENGTH")
+            gateway = self.router_config.get("PHYSICAL_WAN_GATEWAY")
+        wan = self.link(self.router_config["PHYSICAL_WAN_INTERFACE"])
         expected_wan = f"{address}/{prefix}" if address and prefix else None
-        observed_wan = self.addresses(self.config["PHYSICAL_WAN_INTERFACE"])
+        observed_wan = self.addresses(self.router_config["PHYSICAL_WAN_INTERFACE"])
         wan.update({"mode": wan_mode, "effective_ipv4": expected_wan, "observed_ipv4": observed_wan, "ipv4_health": address_check(expected_wan, observed_wan), "effective_gateway": gateway})
-        wan["gateway_reachability"] = self.probe(gateway, self.config["PHYSICAL_WAN_INTERFACE"]) if gateway else Check(HealthState.UNKNOWN, "effective gateway unavailable")
-        wan["internet_reachability"] = self.probe(self.config.get("INTERNET_HEALTH_TARGET", "none"), self.config["PHYSICAL_WAN_INTERFACE"])
+        wan["gateway_reachability"] = self.probe(gateway, self.router_config["PHYSICAL_WAN_INTERFACE"]) if gateway else Check(HealthState.UNKNOWN, "effective gateway unavailable")
+        wan["internet_reachability"] = self.probe(self.management_config.internet_health_target, self.router_config["PHYSICAL_WAN_INTERFACE"])
 
-        lan = self.link(self.config["PHYSICAL_LAN_INTERFACE"])
-        expected_lan = f'{self.config["ROUTER_LAN"]}/{self.config["LAN_SUBNET"].split("/")[1]}'
-        observed_lan = self.addresses(self.config["PHYSICAL_LAN_INTERFACE"])
+        lan = self.link(self.router_config["PHYSICAL_LAN_INTERFACE"])
+        expected_lan = f'{self.router_config["ROUTER_LAN"]}/{self.router_config["LAN_SUBNET"].split("/")[1]}'
+        observed_lan = self.addresses(self.router_config["PHYSICAL_LAN_INTERFACE"])
         lan.update({"expected_ipv4": expected_lan, "observed_ipv4": observed_lan, "ipv4_health": address_check(expected_lan, observed_lan)})
-        lan_target = self.config.get("LAN_HEALTH_TARGET", "none")
+        lan_target = self.management_config.lan_health_target
         lan["target"] = lan_target
-        lan["icmp"] = self.probe(lan_target, self.config["PHYSICAL_LAN_INTERFACE"])
-        neighbors_result = self.command(["ip", "-j", "neigh", "show", "dev", self.config["PHYSICAL_LAN_INTERFACE"]])
+        lan["icmp"] = self.probe(lan_target, self.router_config["PHYSICAL_LAN_INTERFACE"])
+        neighbors_result = self.command(["ip", "-j", "neigh", "show", "dev", self.router_config["PHYSICAL_LAN_INTERFACE"]])
         neighbors = parse_neighbors(neighbors_result.stdout) if neighbors_result.returncode == 0 else {}
         lan["target_neighbor_state"] = neighbors.get(lan_target) if lan_target != "none" else None
         lan["neighbor_reachability"] = neighbor_check(lan_target, lan["target_neighbor_state"])
