@@ -57,6 +57,13 @@ def validate(values: dict[str, str]) -> None:
     deployment = values["DEPLOYMENT_MODE"]
     if deployment not in {"lab", "physical"}:
         raise ValueError("DEPLOYMENT_MODE must be lab or physical")
+    for key in ("LAN_HEALTH_TARGET", "INTERNET_HEALTH_TARGET"):
+        target = values.get(key, "none")
+        if target != "none":
+            try:
+                ipaddress.IPv4Address(target)
+            except ipaddress.AddressValueError as error:
+                raise ValueError(f"{key} must be none or an IPv4 address") from error
     wan_mode = values.get("PHYSICAL_WAN_MODE", "static")
     if wan_mode not in {"static", "dhcp"}:
         raise ValueError("PHYSICAL_WAN_MODE must be static or dhcp")
@@ -77,6 +84,12 @@ def validate(values: dict[str, str]) -> None:
             raise ValueError(f"{key} must be within UPSTREAM_SUBNET")
     if ipaddress.ip_address(values["ROUTER_LAN"]) not in lan:
         raise ValueError("ROUTER_LAN must be within LAN_SUBNET")
+    lan_health_target = values.get("LAN_HEALTH_TARGET", "none")
+    if deployment == "physical" and lan_health_target != "none":
+        if ipaddress.ip_address(lan_health_target) not in lan:
+            raise ValueError("LAN_HEALTH_TARGET must be within LAN_SUBNET")
+        if lan_health_target == values["ROUTER_LAN"]:
+            raise ValueError("LAN_HEALTH_TARGET must not equal ROUTER_LAN")
     if ipaddress.ip_address(values["CLIENT_ADDRESS"]) not in lan:
         raise ValueError("CLIENT_ADDRESS must be within LAN_SUBNET")
     dhcp_start = ipaddress.ip_address(values["DHCP_RANGE_START"])

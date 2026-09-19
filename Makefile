@@ -1,6 +1,9 @@
-.PHONY: help check test lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test physical-hardware-check physical-hardware-test-start physical-hardware-test-refresh-ipfix physical-hardware-test-observe-nat physical-hardware-test-observe-firewall physical-hardware-test-verify physical-hardware-test-stop physical-hardware-test-post-reboot systemd-show systemd-health-show systemd-show-networkmanager systemd-install systemd-uninstall systemd-enable systemd-disable systemd-start systemd-stop systemd-status
+.PHONY: help check test operational-health lab-info lab-create lab-destroy lab-status lab-test routing-enable routing-status routing-test routing-disable nat-enable nat-status nat-test nat-disable firewall-enable firewall-status firewall-test firewall-disable dhcp-enable dhcp-status dhcp-test dhcp-disable dns-enable dns-disable dns-test ipfix-enable ipfix-disable ipfix-test observability-enable observability-disable integration-test metrics-show metrics-test metrics-export-enable metrics-export-disable metrics-export-status metrics-export-test runtime-start runtime-stop runtime-restart runtime-status runtime-check runtime-test physical-check physical-sim-test physical-hardware-check physical-hardware-test-start physical-hardware-test-refresh-ipfix physical-hardware-test-observe-nat physical-hardware-test-observe-firewall physical-hardware-test-verify physical-hardware-test-stop physical-hardware-test-post-reboot systemd-show systemd-health-show systemd-show-networkmanager systemd-install systemd-uninstall systemd-enable systemd-disable systemd-start systemd-stop systemd-status
 
 help:
+	@echo "R17.1 read-only operational health:"
+	@echo "  operational-health                      emit deterministic operational-health JSON"
+	@echo ""
 	@echo "R16 persistent router service and supervision targets:"
 	@echo "  systemd-show / systemd-show-networkmanager preview generated persistence artifacts"
 	@echo "  systemd-install                         install artifacts; does not enable or start"
@@ -29,6 +32,9 @@ check:
 
 test:
 	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+operational-health:
+	@sudo python3 router/scripts/operational_health.py
 
 lab-info:
 	@lab/scripts/lab-info.sh

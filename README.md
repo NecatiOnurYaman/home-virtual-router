@@ -4,7 +4,7 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository includes **Stage R14: virtual-router deployment validation infrastructure**. R13 maps the proven semantic WAN/LAN roles to explicitly configured pre-existing host interfaces; R14 adds an opt-in, phased deployment-interface/external-client acceptance workflow. The intended target is an Ubuntu UTM VM with two externally supplied network interfaces, including VirtIO, and this two-interface DHCP-WAN deployment has been validated. Router management, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
+The repository includes validated R14 virtual-router deployment infrastructure and accepted R16 persistent-operation hardening. R17.1 now adds a read-only operational-health model as the first post-R16 management foundation. The web management surface, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
 
 The deployment roadmap is R12 runtime and deployment hardening, R13 host-interface deployment, R14 virtual-router deployment validation, R15 persistent background router operation, and R16 deployment polish/production hardening. The existing `DEPLOYMENT_MODE=physical`, `PHYSICAL_*`, `physical/*`, and `physical-hardware-*` names are compatibility terminology: “physical” means host-context operation against explicit pre-existing interfaces and does not require bare-metal NICs.
 
@@ -51,6 +51,8 @@ The tracked default remains `DEPLOYMENT_MODE=lab`. Physical mode is selected onl
 ## Physical deployment / R14
 
 R14 is a bounded, operator-driven acceptance lifecycle for a real host-context deployment. R15 adds explicit systemd installation, boot enablement, and a persistent per-interface NetworkManager exclusion. R16 adds bounded 30-second health supervision and coherent recovery through the same canonical runtime lifecycle. Installation never enables or starts any unit automatically. See [`docs/persistent-operation.md`](docs/persistent-operation.md).
+
+R17.1 begins post-R16 management work with a deterministic, read-only operational-health JSON collector. It deliberately keeps operational link/path degradation separate from R12–R16 runtime integrity and recovery. Optional LAN and Internet IPv4 diagnostic targets are disabled by default. No management listener, API, UI, authentication, configuration write, or runtime control is introduced. See [`docs/operational-health.md`](docs/operational-health.md).
 
 Physical mode requires two explicitly prepared, dedicated WAN/LAN interfaces that NetworkManager or systemd-networkd does not manage during the test. The WAN can use a static address or an HVR-owned ordinary upstream DHCP lease. DHCP WAN works behind a normal consumer/ISP router: DMZ, bridge, and passthrough modes are not required, and double NAT is a supported baseline.
 
