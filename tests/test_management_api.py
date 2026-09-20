@@ -150,7 +150,9 @@ class ManagementSupportInstallTests(unittest.TestCase):
         required = {
             support.HELPER_PATH,
             support.SUDOERS_PATH,
+            support.INSTALL_ROOT / "router/management/api.py",
             support.INSTALL_ROOT / "router/scripts/management_read.py",
+            support.INSTALL_ROOT / "router/scripts/management_api.py",
             support.INSTALL_ROOT / "router/scripts/runtime-stage-status.sh",
             support.INSTALL_ROOT / "router/management/collector.py",
             support.INSTALL_ROOT / "router/runtime/state.py",
@@ -162,12 +164,17 @@ class ManagementSupportInstallTests(unittest.TestCase):
         helper = expected[support.HELPER_PATH][0].decode()
         self.assertIn("cd /", helper)
         self.assertIn("/usr/bin/env -i", helper)
-        self.assertIn("/usr/bin/python3 -I", helper)
+        self.assertIn("/usr/bin/python3 -I -B", helper)
         self.assertIn("/usr/lib/home-virtual-router/router/scripts/management_read.py", helper)
         self.assertNotIn(str(ROOT), helper)
         self.assertNotIn("$HOME", helper)
         self.assertNotIn("PYTHONPATH", helper)
         self.assertNotIn("PYTHONHOME", helper)
+        api_entry = expected[support.INSTALL_ROOT / "router/scripts/management_api.py"][0].decode()
+        self.assertIn("REPOSITORY = Path(__file__).resolve().parents[2]", api_entry)
+        self.assertIn('LOOPBACK_HOST = "127.0.0.1"', api_entry)
+        self.assertNotIn(str(ROOT), api_entry)
+        self.assertNotIn("geteuid", api_entry)
 
     def test_sudoers_is_exact_zero_argument_policy(self) -> None:
         policy = support.SUDOERS
@@ -180,6 +187,7 @@ class ManagementSupportInstallTests(unittest.TestCase):
         self.assertNotIn("SETENV", policy)
         self.assertNotIn("*", policy)
         self.assertNotIn("/usr/bin/python", policy)
+        self.assertEqual(policy.count("NOPASSWD:"), 1)
 
     def test_temp_root_install_verify_reinstall_and_uninstall(self) -> None:
         expected = support.artifacts(ROOT)
@@ -194,6 +202,14 @@ class ManagementSupportInstallTests(unittest.TestCase):
             self.assertEqual(
                 stat.S_IMODE((root / support.INSTALL_ROOT / "router/management/collector.py").stat().st_mode),
                 0o644,
+            )
+            self.assertEqual(
+                stat.S_IMODE((root / support.INSTALL_ROOT / "router/management/api.py").stat().st_mode),
+                0o644,
+            )
+            self.assertEqual(
+                stat.S_IMODE((root / support.INSTALL_ROOT / "router/scripts/management_api.py").stat().st_mode),
+                0o755,
             )
             self.assertEqual(stat.S_IMODE((root / support.INSTALL_ROOT).stat().st_mode), 0o755)
             support.uninstall(root, expected)

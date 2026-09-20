@@ -28,7 +28,8 @@ Install the native read boundary explicitly on Ubuntu before running the API as 
 ```sh
 sudo make install-management-api-support
 sudo make verify-management-api-support
-sudo -u hvr-web python3 router/scripts/management_api.py
+sudo -u hvr-web /usr/bin/python3 -I -B \
+  /usr/lib/home-virtual-router/router/scripts/management_api.py
 ```
 
 Installation creates the non-login system account `hvr-web` with home `/nonexistent`; it is not added to `sudo` or another privileged group. It installs:
@@ -36,9 +37,9 @@ Installation creates the non-login system account `hvr-web` with home `/nonexist
 ```text
 /usr/libexec/home-virtual-router-management-read
 /usr/lib/home-virtual-router/
-    router/management/              R17.1 collection modules
+    router/management/              R17.1 collection and R17.2 HTTP modules
     router/runtime/                 runtime-state reader
-    router/scripts/                 fixed reader and authoritative status bridge
+    router/scripts/                 installed API, fixed reader, and status bridge
     router/config/                  health-check configuration dependencies
     lab/scripts/                    sourced runtime/topology health primitives
     lab/config/                     validated fallback configuration
@@ -46,7 +47,9 @@ Installation creates the non-login system account `hvr-web` with home `/nonexist
 /etc/sudoers.d/home-virtual-router-management
 ```
 
-The installed tree and entry point are root-owned, not group/world writable, and independent of the invoking checkout. The entry point changes to `/`, replaces the caller environment with a fixed minimal environment, uses a fixed secure `PATH`, and executes `/usr/bin/python3 -I` against the absolute installed reader. Python isolation and the installed reader's absolute module root prevent `PYTHONPATH`, `PYTHONHOME`, the caller's current directory, home directory, or checkout from redirecting privileged imports.
+The installed tree and entry point are root-owned, not group/world writable, and independent of the invoking checkout. The API code is root-owned and read/execute-only to `hvr-web`; it is still executed unprivileged as that identity. Its installed script resolves `/usr/lib/home-virtual-router` from its own absolute location. The API launch uses Python isolation and bytecode suppression, so it neither imports from nor writes to the checkout.
+
+The privileged entry point changes to `/`, replaces the caller environment with a fixed minimal environment, uses a fixed secure `PATH`, and executes `/usr/bin/python3 -I -B` against the absolute installed reader. Python isolation and the installed reader's absolute module root prevent `PYTHONPATH`, `PYTHONHOME`, the caller's current directory, home directory, or checkout from redirecting privileged imports. `-B` also prevents normal management reads from creating `__pycache__` files in the installed tree.
 
 The sudoers drop-in is root-owned mode `0440`, is checked with `visudo -cf`, and authorizes only this zero-argument command:
 
@@ -58,7 +61,7 @@ hvr-web ALL=(root) NOPASSWD: /usr/libexec/home-virtual-router-management-read ""
 
 The empty argument string is the sudoers command-matching form that requires no command-line arguments. There is no wildcard, shell, Python authorization, `SETENV`, arbitrary path, or broad sudo grant. The helper independently rejects arguments as defense in depth.
 
-For native validation, confirm the two `make` commands above succeed, then inspect `sudo -l -U hvr-web`, run `sudo -u hvr-web sudo -n /usr/libexec/home-virtual-router-management-read`, and verify `/health`, `/status`, `/clients`, and `/config` over `127.0.0.1`. Also verify an added helper argument is rejected and that the API process runs as `hvr-web`, not root. Native Linux ownership, account, sudoers, and authoritative collection validation has not yet been performed for this commit.
+For native validation, confirm the two `make` commands above succeed, then inspect `sudo -l -U hvr-web`, run `sudo -u hvr-web sudo -n /usr/libexec/home-virtual-router-management-read`, and start the API with the absolute installed command shown above. Verify `/health`, `/status`, `/clients`, and `/config` over `127.0.0.1`. Also verify an added helper argument is rejected and that the API process runs as `hvr-web`, not root. Checkout and `/home` permissions do not need to be relaxed: `hvr-web` executes no application code from `/home`. Privilege escalation remains limited to the existing exact read helper. Native Linux validation of this corrected installed API layout has not yet been performed.
 
 `sudo make uninstall-management-api-support` removes only exact, unmodified installed support files. It deliberately retains `hvr-web` to avoid surprising account deletion and never removes `router.env` or `management.env`.
 

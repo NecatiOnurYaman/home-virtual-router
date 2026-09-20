@@ -17,12 +17,14 @@ API_USER = "hvr-web"
 
 SOURCE_FILES = (
     "router/management/__init__.py",
+    "router/management/api.py",
     "router/management/collector.py",
     "router/management/config.py",
     "router/management/models.py",
     "router/management/service.py",
     "router/runtime/__init__.py",
     "router/runtime/state.py",
+    "router/scripts/management_api.py",
     "router/scripts/management_read.py",
     "router/scripts/runtime-stage-status.sh",
     "router/scripts/safety.sh",
@@ -44,7 +46,7 @@ set -eu
 [ "$(/usr/bin/id -u)" -eq 0 ] || { echo "error: root privileges are required" >&2; exit 1; }
 cd /
 exec /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \\
-  /usr/bin/python3 -I /usr/lib/home-virtual-router/router/scripts/management_read.py
+  /usr/bin/python3 -I -B /usr/lib/home-virtual-router/router/scripts/management_read.py
 """
 
 SUDOERS = f"""Defaults:{API_USER} env_reset
@@ -57,7 +59,7 @@ def artifacts(repository: Path) -> dict[Path, tuple[bytes, int]]:
     result: dict[Path, tuple[bytes, int]] = {}
     for source_name in SOURCE_FILES:
         source = repository / source_name
-        mode = 0o755 if source_name.endswith((".sh", "management_read.py")) else 0o644
+        mode = 0o755 if source_name.endswith((".sh", "management_api.py", "management_read.py")) else 0o644
         result[INSTALL_ROOT / source_name] = (source.read_bytes(), mode)
     result[HELPER_PATH] = (HELPER.encode(), 0o755)
     result[SUDOERS_PATH] = (SUDOERS.encode(), 0o440)
