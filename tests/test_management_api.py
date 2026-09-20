@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 from pathlib import Path
+import stat
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +15,11 @@ from router.management.service import sanitized_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SUPPORT_PATH = ROOT / "router/scripts/management_support.py"
+support_spec = importlib.util.spec_from_file_location("hvr_management_support", SUPPORT_PATH)
+support = importlib.util.module_from_spec(support_spec)
+assert support_spec.loader
+support_spec.loader.exec_module(support)
 
 
 def snapshot(overall: str = "healthy") -> dict[str, object]:
@@ -123,14 +131,85 @@ class PrivilegeBoundaryTests(unittest.TestCase):
         self.assertNotIn("sensitive", str(raised.exception))
 
     def test_helper_and_launcher_preserve_privilege_and_loopback_boundaries(self) -> None:
-        helper = (ROOT / "router/scripts/management-read-helper.sh").read_text(encoding="utf-8")
+        helper = support.HELPER
         reader = (ROOT / "router/scripts/management_read.py").read_text(encoding="utf-8")
         launcher = (ROOT / "router/scripts/management_api.py").read_text(encoding="utf-8")
         self.assertIn('[ "$#" -eq 0 ]', helper)
-        self.assertIn('[ "$(id -u)" -eq 0 ]', helper)
+        self.assertIn('[ "$(/usr/bin/id -u)" -eq 0 ]', helper)
         self.assertIn("len(sys.argv) != 1", reader)
         self.assertIn("os.geteuid() != 0", reader)
         self.assertIn('LOOPBACK_HOST = "127.0.0.1"', launcher)
         self.assertNotIn("0.0.0.0", launcher)
         self.assertNotIn("--helper", launcher)
         self.assertNotIn("sudo", launcher)
+
+
+class ManagementSupportInstallTests(unittest.TestCase):
+    def test_installed_layout_is_fixed_complete_and_checkout_independent(self) -> None:
+        expected = support.artifacts(ROOT)
+        required = {
+            support.HELPER_PATH,
+            support.SUDOERS_PATH,
+            support.INSTALL_ROOT / "router/scripts/management_read.py",
+            support.INSTALL_ROOT / "router/scripts/runtime-stage-status.sh",
+            support.INSTALL_ROOT / "router/management/collector.py",
+            support.INSTALL_ROOT / "router/runtime/state.py",
+            support.INSTALL_ROOT / "lab/scripts/runtime-common.sh",
+            support.INSTALL_ROOT / "lab/scripts/topology-common.sh",
+            support.INSTALL_ROOT / "physical/scripts/physical-common.sh",
+        }
+        self.assertTrue(required <= set(expected))
+        helper = expected[support.HELPER_PATH][0].decode()
+        self.assertIn("cd /", helper)
+        self.assertIn("/usr/bin/env -i", helper)
+        self.assertIn("/usr/bin/python3 -I", helper)
+        self.assertIn("/usr/lib/home-virtual-router/router/scripts/management_read.py", helper)
+        self.assertNotIn(str(ROOT), helper)
+        self.assertNotIn("$HOME", helper)
+        self.assertNotIn("PYTHONPATH", helper)
+        self.assertNotIn("PYTHONHOME", helper)
+
+    def test_sudoers_is_exact_zero_argument_policy(self) -> None:
+        policy = support.SUDOERS
+        self.assertIn(
+            'hvr-web ALL=(root) NOPASSWD: /usr/libexec/home-virtual-router-management-read ""',
+            policy,
+        )
+        self.assertIn("Defaults:hvr-web env_reset", policy)
+        self.assertIn("Defaults:hvr-web secure_path=", policy)
+        self.assertNotIn("SETENV", policy)
+        self.assertNotIn("*", policy)
+        self.assertNotIn("/usr/bin/python", policy)
+
+    def test_temp_root_install_verify_reinstall_and_uninstall(self) -> None:
+        expected = support.artifacts(ROOT)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            support.install(root, expected)
+            support.verify(root, expected)
+            support.install(root, expected)
+            support.verify(root, expected)
+            self.assertEqual(stat.S_IMODE((root / support.HELPER_PATH).stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((root / support.SUDOERS_PATH).stat().st_mode), 0o440)
+            self.assertEqual(
+                stat.S_IMODE((root / support.INSTALL_ROOT / "router/management/collector.py").stat().st_mode),
+                0o644,
+            )
+            self.assertEqual(stat.S_IMODE((root / support.INSTALL_ROOT).stat().st_mode), 0o755)
+            support.uninstall(root, expected)
+            support.uninstall(root, expected)
+            self.assertFalse((root / support.INSTALL_ROOT).exists())
+            self.assertFalse((root / support.HELPER_PATH).exists())
+            self.assertFalse((root / support.SUDOERS_PATH).exists())
+
+    def test_control_creates_only_dedicated_non_login_identity(self) -> None:
+        control = (ROOT / "router/scripts/management-support-control.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            "/usr/sbin/useradd --system --no-create-home --home-dir /nonexistent "
+            "--shell /usr/sbin/nologin hvr-web",
+            control,
+        )
+        self.assertIn("/usr/sbin/visudo -cf", control)
+        self.assertNotIn("usermod", control)
+        self.assertNotIn("systemctl", control)
+        self.assertNotIn("userdel", control)

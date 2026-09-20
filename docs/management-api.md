@@ -23,6 +23,45 @@ All mutating HTTP methods receive HTTP 405. Unknown paths receive HTTP 404. If a
 
 The HTTP process is unprivileged. The authoritative R17.1 stage bridge correctly remains root-only, so data endpoints invoke exactly one fixed, bounded operation through `sudo -n`: `/usr/libexec/home-virtual-router-management-read`. That root helper accepts no arguments, reads only the fixed deployed router and management configuration paths, performs the existing observational collection, emits a structured JSON document, and offers no command, path, recovery, or mutation input.
 
-R17.2 does not install a sudo policy, systemd service, or production packaging for this boundary. Native validation therefore requires an operator to install the helper at that fixed root-owned path and arrange a narrowly scoped local permission for only that executable. Do not grant broad passwordless sudo. Without that machine-local arrangement, `/health` remains available while the three data endpoints return HTTP 503. Installing and supervising a production API service is deferred.
+Install the native read boundary explicitly on Ubuntu before running the API as its dedicated identity:
+
+```sh
+sudo make install-management-api-support
+sudo make verify-management-api-support
+sudo -u hvr-web python3 router/scripts/management_api.py
+```
+
+Installation creates the non-login system account `hvr-web` with home `/nonexistent`; it is not added to `sudo` or another privileged group. It installs:
+
+```text
+/usr/libexec/home-virtual-router-management-read
+/usr/lib/home-virtual-router/
+    router/management/              R17.1 collection modules
+    router/runtime/                 runtime-state reader
+    router/scripts/                 fixed reader and authoritative status bridge
+    router/config/                  health-check configuration dependencies
+    lab/scripts/                    sourced runtime/topology health primitives
+    lab/config/                     validated fallback configuration
+    physical/scripts/               sourced physical health primitives
+/etc/sudoers.d/home-virtual-router-management
+```
+
+The installed tree and entry point are root-owned, not group/world writable, and independent of the invoking checkout. The entry point changes to `/`, replaces the caller environment with a fixed minimal environment, uses a fixed secure `PATH`, and executes `/usr/bin/python3 -I` against the absolute installed reader. Python isolation and the installed reader's absolute module root prevent `PYTHONPATH`, `PYTHONHOME`, the caller's current directory, home directory, or checkout from redirecting privileged imports.
+
+The sudoers drop-in is root-owned mode `0440`, is checked with `visudo -cf`, and authorizes only this zero-argument command:
+
+```sudoers
+Defaults:hvr-web env_reset
+Defaults:hvr-web secure_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+hvr-web ALL=(root) NOPASSWD: /usr/libexec/home-virtual-router-management-read ""
+```
+
+The empty argument string is the sudoers command-matching form that requires no command-line arguments. There is no wildcard, shell, Python authorization, `SETENV`, arbitrary path, or broad sudo grant. The helper independently rejects arguments as defense in depth.
+
+For native validation, confirm the two `make` commands above succeed, then inspect `sudo -l -U hvr-web`, run `sudo -u hvr-web sudo -n /usr/libexec/home-virtual-router-management-read`, and verify `/health`, `/status`, `/clients`, and `/config` over `127.0.0.1`. Also verify an added helper argument is rejected and that the API process runs as `hvr-web`, not root. Native Linux ownership, account, sudoers, and authoritative collection validation has not yet been performed for this commit.
+
+`sudo make uninstall-management-api-support` removes only exact, unmodified installed support files. It deliberately retains `hvr-web` to avoid surprising account deletion and never removes `router.env` or `management.env`.
+
+R17.2 still does not install or start an API systemd service. The `make management-api` target remains a development launcher, and the listener remains fixed to localhost. Without the installed boundary, `/health` remains available while the three data endpoints return HTTP 503.
 
 Future LAN/WAN listening, authentication, TLS, configuration editing, and runtime-control operations remain later-stage work.
