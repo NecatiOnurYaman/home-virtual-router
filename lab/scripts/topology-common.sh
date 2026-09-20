@@ -72,6 +72,8 @@ readonly METRICS_EXPORT_RESULT_FILE="$METRICS_EXPORT_RUNTIME_DIR/receiver-result
 readonly METRICS_EXPORT_READY_FILE="$METRICS_EXPORT_RUNTIME_DIR/test-receiver.ready"
 readonly METRICS_EXPORTER="$HVR_REPO_DIR/router/scripts/export_metrics.py"
 readonly METRICS_TEST_RECEIVER="$HVR_REPO_DIR/router/scripts/metrics_test_receiver.py"
+readonly RUNTIME_REPO_ROOT_FILE="/run/home-virtual-router/runtime/repo-root"
+readonly RUNTIME_IDENTITY_TOOL="$HVR_REPO_DIR/router/management/runtime_identity.py"
 
 # These variables are populated only from an allowlist after Python validation.
 DEPLOYMENT_MODE=""
@@ -751,20 +753,40 @@ process_is_in_router_namespace() {
   [ "$process_netns" = "$router_netns" ]
 }
 
-metrics_exporter_identity_matches() {
-  local pid="$1" expected_starttime current_starttime command_line executable
+runtime_identity_root() {
+  python3 "$RUNTIME_IDENTITY_TOOL" read "$RUNTIME_REPO_ROOT_FILE"
+}
+
+metrics_python_executable_matches() {
+  case "${1##*/}" in python3|python3.[0-9]*) return 0 ;; *) return 1 ;; esac
+}
+
+metrics_exporter_command_matches() {
+  local command_line="$1" identity_root="$2" expected_exporter
+  expected_exporter="$identity_root/router/scripts/export_metrics.py"
+  printf '%s\n' "$command_line" | grep -F -x -- "$expected_exporter" >/dev/null || return 1
+  printf '%s\n' "$command_line" | grep -F -x -- "$ROUTER_ID" >/dev/null || return 1
+  printf '%s\n' "$command_line" | grep -F -x -- "$METRICS_EXPORT_HOST" >/dev/null
+}
+
+metrics_exporter_identity_matches_for_root() {
+  local pid="$1" identity_root="$2" expected_starttime current_starttime command_line executable
   process_is_running "$pid" || return 1
   [ -r "$METRICS_EXPORT_STARTTIME_FILE" ] || return 1
   expected_starttime="$(cat "$METRICS_EXPORT_STARTTIME_FILE")"
   current_starttime="$(process_starttime "$pid")" || return 1
   [ "$current_starttime" = "$expected_starttime" ] || return 1
   executable="$(readlink "/proc/$pid/exe" 2>/dev/null)" || return 1
-  case "${executable##*/}" in python3|python3.[0-9]*) ;; *) return 1 ;; esac
+  metrics_python_executable_matches "$executable" || return 1
   command_line="$(tr '\0' '\n' < "/proc/$pid/cmdline")"
-  printf '%s\n' "$command_line" | grep -F -x -- "$METRICS_EXPORTER" >/dev/null || return 1
-  printf '%s\n' "$command_line" | grep -F -x -- "$ROUTER_ID" >/dev/null || return 1
-  printf '%s\n' "$command_line" | grep -F -x -- "$METRICS_EXPORT_HOST" >/dev/null || return 1
+  metrics_exporter_command_matches "$command_line" "$identity_root" || return 1
   process_is_in_router_namespace "$pid"
+}
+
+metrics_exporter_identity_matches() {
+  local pid="$1" identity_root
+  identity_root="$(runtime_identity_root)" || return 1
+  metrics_exporter_identity_matches_for_root "$pid" "$identity_root"
 }
 
 metrics_exporter_running() {

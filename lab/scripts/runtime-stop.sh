@@ -59,5 +59,5 @@ while IFS= read -r stage; do
   owned="$(runtime_remove_owned "$owned" "$stage")"
   runtime_write_state "$profile" stopping "$started_at" "$owned"
 done < <(python3 "$RUNTIME_STATE_TOOL" show "$RUNTIME_STATE_FILE" --field rollback)
-rm -f -- "$RUNTIME_STATE_FILE" "$RUNTIME_PROFILE_FILE" "$RUNTIME_STARTED_FILE" "$RUNTIME_CONFIG_SNAPSHOT" "$RUNTIME_ERROR_FILE"
+rm -f -- "$RUNTIME_STATE_FILE" "$RUNTIME_PROFILE_FILE" "$RUNTIME_STARTED_FILE" "$RUNTIME_CONFIG_SNAPSHOT" "$RUNTIME_ERROR_FILE" "$RUNTIME_REPO_ROOT_FILE"
 echo "HVR runtime is stopped; only R12-owned stages were removed."

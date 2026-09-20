@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import unittest
 from datetime import UTC, datetime
@@ -68,11 +69,38 @@ class ReceiverValidationTests(unittest.TestCase):
 
 
 class LifecycleContractTests(unittest.TestCase):
+    def shell_predicate(self, body: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["bash", "-c", f'source "$1"; {body}', "bash", "lab/scripts/topology-common.sh", *arguments],
+            capture_output=True, text=True, check=False,
+        )
+
+    def test_runtime_root_controls_exact_exporter_argument_without_weakening_identity(self) -> None:
+        active = "/srv/hvr-active"
+        valid = f"python3\n{active}/router/scripts/export_metrics.py\n--router-id\nhvr-router\n--host\n192.0.2.1"
+        body = 'ROUTER_ID="$2"; METRICS_EXPORT_HOST="$3"; metrics_exporter_command_matches "$4" "$5"'
+        self.assertEqual(self.shell_predicate(body, "hvr-router", "192.0.2.1", valid, active).returncode, 0)
+        for router_id, host, command, root in (
+            ("hvr-router", "192.0.2.1", valid, "/usr/lib/home-virtual-router"),
+            ("wrong-router", "192.0.2.1", valid, active),
+            ("hvr-router", "198.51.100.1", valid, active),
+        ):
+            with self.subTest(router_id=router_id, host=host, root=root):
+                self.assertNotEqual(self.shell_predicate(body, router_id, host, command, root).returncode, 0)
+        self.assertEqual(self.shell_predicate('metrics_python_executable_matches "$2"', "/usr/bin/python3.14").returncode, 0)
+        self.assertNotEqual(self.shell_predicate('metrics_python_executable_matches "$2"', "/tmp/not-python").returncode, 0)
+
     def test_cleanup_uses_pid_starttime_script_and_namespace_identity(self) -> None:
         common = Path("lab/scripts/topology-common.sh").read_text(encoding="utf-8")
-        function = common[common.index("metrics_exporter_identity_matches()") : common.index("pmacct_core_running()")]
-        for marker in ("process_starttime", "METRICS_EXPORTER", "process_is_in_router_namespace", "METRICS_EXPORT_HOST"):
+        function = common[common.index("metrics_python_executable_matches()") : common.index("pmacct_core_running()")]
+        for marker in ("process_starttime", "expected_exporter", "process_is_in_router_namespace", "METRICS_EXPORT_HOST"):
             self.assertIn(marker, function)
+        for marker in ('metrics_python_executable_matches', 'metrics_exporter_command_matches',
+                       '[ "$current_starttime" = "$expected_starttime" ]',
+                       'grep -F -x -- "$METRICS_EXPORT_HOST"', 'runtime_identity_root'):
+            self.assertIn(marker, function)
+        self.assertNotIn('source "$identity_root', function)
+        self.assertNotIn('python3 "$identity_root', function)
         self.assertNotIn("pkill", function)
         self.assertNotIn("killall", function)
 

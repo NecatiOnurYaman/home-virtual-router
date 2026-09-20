@@ -51,6 +51,16 @@ The installed tree and entry point are root-owned, not group/world writable, and
 
 The privileged entry point changes to `/`, replaces the caller environment with a fixed minimal environment, uses a fixed secure `PATH`, and executes `/usr/bin/python3 -I -B` against the absolute installed reader. Python isolation and the installed reader's absolute module root prevent `PYTHONPATH`, `PYTHONHOME`, the caller's current directory, home directory, or checkout from redirecting privileged imports. `-B` also prevents normal management reads from creating `__pycache__` files in the installed tree.
 
+The installed checker code and the active R16 runtime identity are deliberately separate. Canonical `runtime-start` records its canonical source root as root-owned mode `0640` data at `/run/home-virtual-router/runtime/repo-root`. The installed checker validates that fixed record and uses it only to construct path-sensitive process identity expectations, such as the exact `export_metrics.py` argument. It never sources, imports, or executes code from the recorded checkout. The metadata is removed by canonical runtime teardown, cannot be selected through HTTP, configuration, or caller environment, and malformed, missing, non-canonical, or non-root-owned metadata fails closed.
+
+An R16 instance already running from before this metadata existed needs one explicit convergence command from the same authoritative checkout before installed management checks can succeed:
+
+```sh
+sudo make runtime-start
+```
+
+This idempotent start validates an existing metrics exporter against that checkout before recording the root; it does not restart already-healthy stages. The R17 installer never starts or restarts R16 and never writes runtime identity metadata.
+
 The sudoers drop-in is root-owned mode `0440`, is checked with `visudo -cf`, and authorizes only this zero-argument command:
 
 ```sudoers

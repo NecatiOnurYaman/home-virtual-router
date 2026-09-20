@@ -155,6 +155,7 @@ class ManagementSupportInstallTests(unittest.TestCase):
             support.INSTALL_ROOT / "router/scripts/management_api.py",
             support.INSTALL_ROOT / "router/scripts/runtime-stage-status.sh",
             support.INSTALL_ROOT / "router/management/collector.py",
+            support.INSTALL_ROOT / "router/management/runtime_identity.py",
             support.INSTALL_ROOT / "router/runtime/state.py",
             support.INSTALL_ROOT / "lab/scripts/runtime-common.sh",
             support.INSTALL_ROOT / "lab/scripts/topology-common.sh",

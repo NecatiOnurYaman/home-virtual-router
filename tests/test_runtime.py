@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,21 @@ import unittest
 from router.runtime.state import (
     RuntimeState, StateError, desired_stages, parse, read, rollback_order, write_atomic,
 )
+from router.management.runtime_identity import (
+    RuntimeIdentityError, read as read_runtime_identity, validate_root, write as write_runtime_identity,
+)
+
+
+def runtime_root_fixture(path: Path) -> Path:
+    for relative in (
+        "router/scripts/export_metrics.py",
+        "lab/scripts/runtime-start.sh",
+        "lab/scripts/runtime-common.sh",
+    ):
+        target = path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+    return path.resolve()
 
 
 class RuntimeStateTests(unittest.TestCase):
@@ -56,6 +72,57 @@ class RuntimeStateTests(unittest.TestCase):
         self.assertEqual(
             desired_stages("observability", False, False)[-1], "observability"
         )
+
+
+class RuntimeIdentityTests(unittest.TestCase):
+    def test_root_metadata_is_canonical_atomic_and_separate_from_checker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            active = runtime_root_fixture(base / "active-runtime")
+            installed = runtime_root_fixture(base / "installed-management")
+            metadata = base / "runtime/repo-root"
+            write_runtime_identity(metadata, active, require_root=False)
+            self.assertEqual(read_runtime_identity(metadata, require_root_owner=False), active)
+            self.assertNotEqual(active, installed)
+            self.assertEqual(stat.S_IMODE(metadata.stat().st_mode), 0o640)
+
+    def test_missing_malformed_relative_and_incomplete_metadata_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            metadata = base / "repo-root"
+            with self.assertRaises(RuntimeIdentityError):
+                read_runtime_identity(metadata, require_root_owner=False)
+            for content in ("relative/path\n", "/two\nlines\n", "no-newline"):
+                with self.subTest(content=content):
+                    metadata.write_text(content, encoding="utf-8")
+                    metadata.chmod(0o640)
+                    with self.assertRaises(RuntimeIdentityError):
+                        read_runtime_identity(metadata, require_root_owner=False)
+            incomplete = (base / "incomplete").resolve()
+            incomplete.mkdir()
+            with self.assertRaises(RuntimeIdentityError):
+                validate_root(str(incomplete))
+
+    def test_writer_rejects_symlink_target(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            active = runtime_root_fixture(base / "active-runtime")
+            metadata = base / "runtime/repo-root"
+            metadata.parent.mkdir()
+            metadata.symlink_to(base / "elsewhere")
+            with self.assertRaises(RuntimeIdentityError):
+                write_runtime_identity(metadata, active, require_root=False)
+
+    def test_runtime_scripts_record_and_remove_fixed_metadata_without_environment_input(self) -> None:
+        common = (Path(__file__).resolve().parents[1] / "lab/scripts/runtime-common.sh").read_text(encoding="utf-8")
+        start = (Path(__file__).resolve().parents[1] / "lab/scripts/runtime-start.sh").read_text(encoding="utf-8")
+        stop = (Path(__file__).resolve().parents[1] / "lab/scripts/runtime-stop.sh").read_text(encoding="utf-8")
+        self.assertIn('runtime_ensure_repository_root "$existing_state"', start)
+        self.assertIn('python3 "$RUNTIME_IDENTITY_TOOL" write "$RUNTIME_REPO_ROOT_FILE" "$candidate"', common)
+        self.assertIn('metrics_exporter_identity_matches_for_root "$pid" "$candidate"', common)
+        self.assertIn('"$RUNTIME_REPO_ROOT_FILE"', stop)
+        for forbidden in ("HVR_RUNTIME_ROOT", "MANAGEMENT", "HTTP", "QUERY"):
+            self.assertNotIn(forbidden, common)
 
 
 class RuntimeShellLoadingTests(unittest.TestCase):

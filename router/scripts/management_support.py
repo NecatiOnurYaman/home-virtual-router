@@ -21,6 +21,7 @@ SOURCE_FILES = (
     "router/management/collector.py",
     "router/management/config.py",
     "router/management/models.py",
+    "router/management/runtime_identity.py",
     "router/management/service.py",
     "router/runtime/__init__.py",
     "router/runtime/state.py",

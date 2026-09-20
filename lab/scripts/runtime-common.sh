@@ -60,6 +60,23 @@ runtime_write_state() {
   chmod 0640 "$RUNTIME_PROFILE_FILE" "$RUNTIME_STARTED_FILE"
 }
 
+runtime_ensure_repository_root() {
+  local existing_state="$1" candidate recorded pid
+  candidate="$(readlink -f -- "$HVR_REPO_DIR")" || die "cannot resolve the active runtime repository root"
+  if [ -e "$RUNTIME_REPO_ROOT_FILE" ]; then
+    recorded="$(runtime_identity_root)" || die "invalid active runtime repository metadata: $RUNTIME_REPO_ROOT_FILE"
+    [ "$recorded" = "$candidate" ] || die "active runtime repository is $recorded, not $candidate"
+    return 0
+  fi
+  if [ "$existing_state" -eq 1 ] && [ "$METRICS_EXPORT_ENABLED" = 1 ] && [ -e "$METRICS_EXPORT_PID_FILE" ]; then
+    pid="$(read_project_pid "$METRICS_EXPORT_PID_FILE")" || die "cannot verify the active metrics exporter before recording runtime identity"
+    metrics_exporter_identity_matches_for_root "$pid" "$candidate" ||
+      die "active metrics exporter does not match the candidate runtime repository: $candidate"
+  fi
+  python3 "$RUNTIME_IDENTITY_TOOL" write "$RUNTIME_REPO_ROOT_FILE" "$candidate" ||
+    die "failed to record the active runtime repository root"
+}
+
 runtime_require_environment() {
   if [ "$DEPLOYMENT_MODE" = "physical" ]; then require_physical_authorization; else require_lab_environment; fi
 }

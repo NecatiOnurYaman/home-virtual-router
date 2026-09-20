@@ -28,6 +28,7 @@ if [ -e "$RUNTIME_STATE_FILE" ]; then
   started_at="$(runtime_state_field started-at)"
   owned="$(runtime_state_field owned)"
 fi
+runtime_ensure_repository_root "$existing_state"
 runtime_write_state "$profile" starting "$started_at" "$owned"
 if [ "$existing_state" -eq 0 ]; then
   cp -- "$HVR_CONFIG" "$RUNTIME_CONFIG_SNAPSHOT"
