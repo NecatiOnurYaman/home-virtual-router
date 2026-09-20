@@ -4,7 +4,7 @@ Home Virtual Router is a future Linux-based software router intended to sit behi
 
 ## Current status
 
-The repository includes validated R14 virtual-router deployment infrastructure and accepted R16 persistent-operation hardening. R17.1 now adds a read-only operational-health model as the first post-R16 management foundation. The web management surface, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
+The repository includes validated R14 virtual-router deployment infrastructure and accepted R16 persistent-operation hardening. R17.1 adds a read-only operational-health model, and R17.2 exposes that accepted model through a localhost-only read-only HTTP API. A GUI, authentication, remote exposure, anomaly detection, SNMP, production appliance packaging, and IPv6 remain outside the current stage.
 
 The deployment roadmap is R12 runtime and deployment hardening, R13 host-interface deployment, R14 virtual-router deployment validation, R15 persistent background router operation, and R16 deployment polish/production hardening. The existing `DEPLOYMENT_MODE=physical`, `PHYSICAL_*`, `physical/*`, and `physical-hardware-*` names are compatibility terminology: “physical” means host-context operation against explicit pre-existing interfaces and does not require bare-metal NICs.
 
@@ -52,7 +52,7 @@ The tracked default remains `DEPLOYMENT_MODE=lab`. Physical mode is selected onl
 
 R14 is a bounded, operator-driven acceptance lifecycle for a real host-context deployment. R15 adds explicit systemd installation, boot enablement, and a persistent per-interface NetworkManager exclusion. R16 adds bounded 30-second health supervision and coherent recovery through the same canonical runtime lifecycle. Installation never enables or starts any unit automatically. See [`docs/persistent-operation.md`](docs/persistent-operation.md).
 
-R17.1 begins post-R16 management work with a deterministic, read-only operational-health JSON collector. It deliberately keeps operational link/path degradation separate from R12–R16 runtime integrity and recovery. `/etc/home-virtual-router/router.env` remains the snapshotted router/runtime domain; optional diagnostics live separately in `/etc/home-virtual-router/management.env` and default to disabled when that file is absent. No management listener, API, UI, authentication, configuration write, or runtime control is introduced. See [`docs/operational-health.md`](docs/operational-health.md).
+R17.1 begins post-R16 management work with a deterministic, read-only operational-health JSON collector. It deliberately keeps operational link/path degradation separate from R12–R16 runtime integrity and recovery. `/etc/home-virtual-router/router.env` remains the snapshotted router/runtime domain; optional diagnostics live separately in `/etc/home-virtual-router/management.env` and default to disabled when that file is absent. R17.2 adds an unauthenticated API fixed to `127.0.0.1`; it provides no configuration writes or runtime control and must not be exposed remotely. See [`docs/operational-health.md`](docs/operational-health.md) and [`docs/management-api.md`](docs/management-api.md).
 
 Physical mode requires two explicitly prepared, dedicated WAN/LAN interfaces that NetworkManager or systemd-networkd does not manage during the test. The WAN can use a static address or an HVR-owned ordinary upstream DHCP lease. DHCP WAN works behind a normal consumer/ISP router: DMZ, bridge, and passthrough modes are not required, and double NAT is a supported baseline.
 

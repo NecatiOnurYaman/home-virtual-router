@@ -25,6 +25,10 @@ The management file may be absent or empty, and either key may be omitted; missi
 
 Client records combine read-only dnsmasq lease fields with the raw Linux neighbor state on the configured LAN interface. A lease is not proof that a client is online, and NUD states such as `STALE` are not converted into an online/offline boolean.
 
+## R17.2 localhost API
+
+R17.2 exposes this accepted model through a small, read-only HTTP API bound only to `127.0.0.1:8080`. The `/api/v1/status` endpoint collects a fresh complete snapshot, while `/api/v1/health` checks only that the API process can answer and deliberately does not run network diagnostics. See [`management-api.md`](management-api.md) for its endpoints, privilege boundary, and local validation workflow.
+
 ## Deferred management surface
 
 A later stage is expected to add an authenticated API/UI and an explicit exposure policy conceptually shaped as:
@@ -35,4 +39,4 @@ MANAGEMENT_LISTEN=lan
 MANAGEMENT_PORT=8080
 ```
 
-Future listen scopes are reserved as `localhost`, `lan`, `wan`, and `both`, with LAN-only as the intended default deployment behavior. These are not accepted `management.env` keys in R17.1: no listener, HTTP server, authentication, firewall exposure, configuration writes, restart controls, or privileged mutation helper is implemented here.
+Future listen scopes are reserved as `localhost`, `lan`, `wan`, and `both`, with LAN-only as the intended default deployment behavior. These are not accepted `management.env` keys in R17.2. The current listener has no authentication because it is not remotely exposed. No firewall exposure, configuration writes, restart controls, or privileged mutation helper is implemented.
