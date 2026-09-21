@@ -145,8 +145,13 @@ function renderServices() {
   for (const [name, check] of Object.entries(services).sort()) {
     const card = document.createElement("article"); card.className = "service-card";
     const heading = document.createElement("h3"); heading.textContent = name.replaceAll("-", " ");
-    const detail = document.createElement("p"); detail.className = "muted"; detail.textContent = text(check && check.detail);
-    card.append(heading, statusBadge(checkState(check)), detail); grid.append(card);
+    card.append(heading, statusBadge(checkState(check)));
+    const detailValue = check && check.detail;
+    if (typeof detailValue === "string" && detailValue.trim() !== "") {
+      const detail = document.createElement("p"); detail.className = "muted"; detail.textContent = detailValue;
+      card.append(detail);
+    }
+    grid.append(card);
   }
 }
 

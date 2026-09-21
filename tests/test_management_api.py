@@ -316,6 +316,12 @@ class ManagementSupportInstallTests(unittest.TestCase):
         for name in ("package.json", "package-lock.json", "node_modules", "vite.config.js", "webpack.config.js"):
             self.assertFalse((ROOT / name).exists())
 
+    def test_service_detail_is_omitted_when_no_detail_exists(self) -> None:
+        javascript = (ROOT / "web/static/app.js").read_text(encoding="utf-8")
+        self.assertIn('typeof detailValue === "string" && detailValue.trim() !== ""', javascript)
+        self.assertIn("detail.textContent = detailValue", javascript)
+        self.assertNotIn("text(check && check.detail)", javascript)
+
     def test_control_creates_only_dedicated_non_login_identity(self) -> None:
         control = (ROOT / "router/scripts/management-support-control.sh").read_text(encoding="utf-8")
         self.assertIn(
