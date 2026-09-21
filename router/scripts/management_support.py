@@ -23,6 +23,7 @@ SOURCE_FILES = (
     "router/management/models.py",
     "router/management/runtime_identity.py",
     "router/management/service.py",
+    "router/management/web.py",
     "router/runtime/__init__.py",
     "router/runtime/state.py",
     "router/scripts/management_api.py",
@@ -39,6 +40,9 @@ SOURCE_FILES = (
     "router/config/dnsmasq-router-dns.conf.template",
     "router/config/dnsmasq-upstream-test.conf.template",
     "router/config/pmacctd-nfprobe.conf.template",
+    "web/index.html",
+    "web/static/styles.css",
+    "web/static/app.js",
 )
 
 HELPER = """#!/bin/sh

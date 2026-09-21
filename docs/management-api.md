@@ -1,12 +1,24 @@
-# R17.2 read-only management API
+# R17.2 API and R18.1 management UI
 
-R17.2 is a localhost-only JSON view of the accepted R17.1 operational-health model. It adds no GUI, authentication, remote exposure, configuration writes, or runtime controls. Start the development/native-validation listener with:
+R18.1 adds an offline browser interface to the localhost-only R17.2 JSON API. The same unprivileged process serves both surfaces; it adds no authentication, remote exposure, configuration writes, or runtime controls. Start the development listener with:
 
 ```sh
 make management-api
 ```
 
 The listener is fixed to IPv4 loopback at `127.0.0.1:8080`. Do not proxy, forward, or otherwise expose this unauthenticated stage to an untrusted interface.
+
+Open `http://127.0.0.1:8080/` in a browser on the router host. The interface contains five read-only views:
+
+- **Overview** combines `/api/v1/status`, `/api/v1/clients`, and `/api/v1/config` into a concise operational summary.
+- **Network** presents expected and observed WAN/LAN values and checks from `/api/v1/status` and `/api/v1/config`.
+- **Clients** presents DHCP lease and raw Linux neighbor evidence from `/api/v1/clients`; it does not invent an online/offline state.
+- **Services** presents the service checks from `/api/v1/status` without reinterpreting backend health.
+- **System** presents the safely exposed runtime record, generation time, and cheap `/api/v1/health` result.
+
+The browser performs a manual or non-overlapping 30-second refresh. Endpoint failures, HTTP 503, malformed JSON, absent optional fields, and unknown future status values are shown as unavailable/unknown management data without claiming the router itself failed. One endpoint failing does not discard successful data from the others.
+
+The interface is plain UTF-8 HTML, CSS, and modern vanilla JavaScript. It has no compilation step, Node.js dependency, third-party library, external font, analytics, CDN, or other remote resource, so it operates entirely offline. Keyboard-visible focus, semantic landmarks and tables, text-and-symbol status badges, horizontal table overflow, and a narrow-screen navigation layout provide the R18.1 accessibility and responsive baseline.
 
 ## Endpoints
 
@@ -44,10 +56,14 @@ Installation creates the non-login system account `hvr-web` with home `/nonexist
     lab/scripts/                    sourced runtime/topology health primitives
     lab/config/                     validated fallback configuration
     physical/scripts/               sourced physical health primitives
+    web/                             R18.1 HTML shell
+        static/                      fixed CSS and JavaScript assets
 /etc/sudoers.d/home-virtual-router-management
 ```
 
-The installed tree and entry point are root-owned, not group/world writable, and independent of the invoking checkout. The API code is root-owned and read/execute-only to `hvr-web`; it is still executed unprivileged as that identity. Its installed script resolves `/usr/lib/home-virtual-router` from its own absolute location. The API launch uses Python isolation and bytecode suppression, so it neither imports from nor writes to the checkout.
+The installed tree, entry point, and UI assets are root-owned, not group/world writable, and independent of the invoking checkout. The API code and UI are read-only to `hvr-web`; the server is still executed unprivileged as that identity. Its installed script resolves `/usr/lib/home-virtual-router` from its own absolute location. The API launch uses Python isolation and bytecode suppression, so it neither imports from nor writes to the checkout.
+
+Static serving uses an exact map for `/`, `/static/styles.css`, and `/static/app.js`. Request paths are never appended to a document root. Unknown and encoded traversal paths cannot select a file, directory listings are impossible, mapped symlinks are rejected, and each response is size-bounded with a fixed content type.
 
 The privileged entry point changes to `/`, replaces the caller environment with a fixed minimal environment, uses a fixed secure `PATH`, and executes `/usr/bin/python3 -I -B` against the absolute installed reader. Python isolation and the installed reader's absolute module root prevent `PYTHONPATH`, `PYTHONHOME`, the caller's current directory, home directory, or checkout from redirecting privileged imports. `-B` also prevents normal management reads from creating `__pycache__` files in the installed tree.
 
@@ -74,6 +90,10 @@ The empty argument string is the sudoers command-matching form that requires no 
 For native validation, confirm the two `make` commands above succeed, then inspect `sudo -l -U hvr-web`, run `sudo -u hvr-web sudo -n /usr/libexec/home-virtual-router-management-read`, and start the API with the absolute installed command shown above. Verify `/health`, `/status`, `/clients`, and `/config` over `127.0.0.1`. Also verify an added helper argument is rejected and that the API process runs as `hvr-web`, not root. Checkout and `/home` permissions do not need to be relaxed: `hvr-web` executes no application code from `/home`. Privilege escalation remains limited to the existing exact read helper. Native Linux validation of this corrected installed API layout has not yet been performed.
 
 `sudo make uninstall-management-api-support` removes only exact, unmodified installed support files. It deliberately retains `hvr-web` to avoid surprising account deletion and never removes `router.env` or `management.env`.
+
+## R18.1 limitations
+
+This stage remains loopback-only and read-only. It has no authentication, TLS, LAN exposure, configuration editing, runtime controls, topology visualization, evidence-chain interface, history, or traffic charts. R18.4 will address secure LAN management; until then, do not expose or proxy this listener beyond loopback.
 
 R17.2 still does not install or start an API systemd service. The `make management-api` target remains a development launcher, and the listener remains fixed to localhost. Without the installed boundary, `/health` remains available while the three data endpoints return HTTP 503.
 

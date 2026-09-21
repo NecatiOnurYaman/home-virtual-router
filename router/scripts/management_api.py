@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import json
 from pathlib import Path
 import sys
 
@@ -13,22 +12,24 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY))
 
 from router.management.api import FixedHelperProvider, ManagementAPI
+from router.management.web import ManagementApplication, StaticResources
 
 
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 
 
-def handler_for(api: ManagementAPI) -> type[BaseHTTPRequestHandler]:
+def handler_for(application: ManagementApplication) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def respond(self, method: str) -> None:
-            status, payload = api.dispatch(method, self.path.split("?", 1)[0])
-            body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
+            response = application.dispatch(method, self.path)
+            self.send_response(response.status)
+            self.send_header("Content-Type", response.content_type)
+            self.send_header("Content-Length", str(len(response.body)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
             self.end_headers()
-            self.wfile.write(body)
+            self.wfile.write(response.body)
 
         def do_GET(self) -> None: self.respond("GET")
         def do_POST(self) -> None: self.respond("POST")
@@ -48,7 +49,8 @@ def main() -> int:
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
     api = ManagementAPI(FixedHelperProvider())
-    HTTPServer((LOOPBACK_HOST, args.port), handler_for(api)).serve_forever()
+    application = ManagementApplication(api, StaticResources(REPOSITORY / "web"))
+    HTTPServer((LOOPBACK_HOST, args.port), handler_for(application)).serve_forever()
     return 0
 
 

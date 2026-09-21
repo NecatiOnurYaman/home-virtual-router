@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Home Virtual Router</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">Home Virtual Router</p>
+      <h1>Management</h1>
+    </div>
+    <div class="refresh-area">
+      <p id="refresh-state" class="muted" aria-live="polite">Waiting for management data</p>
+      <button id="refresh" type="button">Refresh now</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav aria-label="Management views">
+      <a href="#overview" data-view-link="overview">Overview</a>
+      <a href="#network" data-view-link="network">Network</a>
+      <a href="#clients" data-view-link="clients">Clients</a>
+      <a href="#services" data-view-link="services">Services</a>
+      <a href="#system" data-view-link="system">System</a>
+    </nav>
+
+    <main id="content" tabindex="-1">
+      <aside id="data-warning" class="notice" hidden aria-live="polite"></aside>
+
+      <section data-view="overview" aria-labelledby="overview-title">
+        <div class="section-heading">
+          <div><p class="eyebrow">Operational summary</p><h2 id="overview-title">Overview</h2></div>
+          <div id="overall-status"></div>
+        </div>
+        <div id="overview-grid" class="card-grid"></div>
+      </section>
+
+      <section data-view="network" aria-labelledby="network-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">Observed and expected state</p><h2 id="network-title">Network</h2></div></div>
+        <div class="two-column">
+          <article><h3>WAN</h3><dl id="wan-details" class="facts"></dl></article>
+          <article><h3>LAN</h3><dl id="lan-details" class="facts"></dl></article>
+        </div>
+      </section>
+
+      <section data-view="clients" aria-labelledby="clients-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">DHCP and neighbor evidence</p><h2 id="clients-title">Clients</h2></div><p id="client-count" class="count"></p></div>
+        <div class="table-wrap"><table><thead><tr><th>Hostname</th><th>IPv4</th><th>MAC</th><th>Lease</th><th>Neighbor state</th></tr></thead><tbody id="clients-body"></tbody></table></div>
+        <p class="annotation">Neighbor state is raw Linux NUD evidence. It is not an online/offline assertion.</p>
+      </section>
+
+      <section data-view="services" aria-labelledby="services-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">Runtime integrity</p><h2 id="services-title">Services</h2></div></div>
+        <div id="services-grid" class="service-grid"></div>
+      </section>
+
+      <section data-view="system" aria-labelledby="system-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">Management and runtime</p><h2 id="system-title">System</h2></div></div>
+        <div class="two-column">
+          <article><h3>Runtime record</h3><dl id="runtime-details" class="facts"></dl></article>
+          <article><h3>Management interface</h3><dl id="management-details" class="facts"></dl></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer>Read-only management interface · Loopback access only</footer>
+</body>
+</html>

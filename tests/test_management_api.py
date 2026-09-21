@@ -12,6 +12,7 @@ from unittest.mock import patch
 from router.management.api import CollectionError, FixedHelperProvider, ManagementAPI
 from router.management.config import ManagementConfig
 from router.management.service import sanitized_config
+from router.management.web import ManagementApplication, StaticResources
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +54,65 @@ class ManagementAPITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, {"status": "ok", "api_version": "v1"})
         self.assertEqual(provider.calls, 0)
+
+
+class ManagementWebTests(unittest.TestCase):
+    def application(self, provider: FakeProvider | None = None) -> ManagementApplication:
+        return ManagementApplication(ManagementAPI(provider or FakeProvider()), StaticResources(ROOT / "web"))
+
+    def test_root_and_explicit_static_assets_have_fixed_content_types(self) -> None:
+        application = self.application()
+        for path, content_type, marker in (
+            ("/", "text/html; charset=utf-8", b"Home Virtual Router"),
+            ("/static/styles.css", "text/css; charset=utf-8", b":root"),
+            ("/static/app.js", "text/javascript; charset=utf-8", b"const STATUS"),
+        ):
+            with self.subTest(path=path):
+                response = application.dispatch("GET", path)
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.content_type, content_type)
+                self.assertIn(marker, response.body)
+
+    def test_static_lookup_is_exact_and_query_strings_do_not_change_authorization(self) -> None:
+        application = self.application()
+        self.assertEqual(application.dispatch("GET", "/?view=network").status, 200)
+        self.assertEqual(application.dispatch("GET", "/static/app.js?v=1").status, 200)
+        for path in (
+            "/static/missing.js", "/unknown", "/static/../router/management/api.py",
+            "/static/%2e%2e/router/management/api.py", "/static/%252e%252e/etc/passwd",
+            "/static/", "/etc/passwd",
+        ):
+            with self.subTest(path=path):
+                response = application.dispatch("GET", path)
+                self.assertEqual(response.status, 404)
+                self.assertEqual(json.loads(response.body), {"detail": "not found"})
+
+    def test_mutating_methods_never_serve_ui_or_collect(self) -> None:
+        provider = FakeProvider()
+        application = self.application(provider)
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            for path in ("/", "/static/app.js", "/api/v1/status"):
+                with self.subTest(method=method, path=path):
+                    self.assertEqual(application.dispatch(method, path).status, 405)
+        self.assertEqual(provider.calls, 0)
+
+    def test_api_routes_remain_compatible_and_health_remains_cheap(self) -> None:
+        provider = FakeProvider(error=AssertionError("health must not collect"))
+        application = self.application(provider)
+        health = application.dispatch("GET", "/api/v1/health?probe=1")
+        self.assertEqual(health.status, 200)
+        self.assertEqual(json.loads(health.body), {"status": "ok", "api_version": "v1"})
+        self.assertEqual(provider.calls, 0)
+        self.assertEqual(application.dispatch("GET", "/api/v1/unknown").status, 404)
+
+    def test_mapped_symlink_is_not_served(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "static").mkdir()
+            (root / "secret").write_text("secret", encoding="utf-8")
+            (root / "index.html").symlink_to(root / "secret")
+            response = StaticResources(root).get("/")
+            self.assertIsNone(response)
 
     def test_status_returns_healthy_and_degraded_snapshots(self) -> None:
         for overall in ("healthy", "degraded"):
@@ -156,10 +216,14 @@ class ManagementSupportInstallTests(unittest.TestCase):
             support.INSTALL_ROOT / "router/scripts/runtime-stage-status.sh",
             support.INSTALL_ROOT / "router/management/collector.py",
             support.INSTALL_ROOT / "router/management/runtime_identity.py",
+            support.INSTALL_ROOT / "router/management/web.py",
             support.INSTALL_ROOT / "router/runtime/state.py",
             support.INSTALL_ROOT / "lab/scripts/runtime-common.sh",
             support.INSTALL_ROOT / "lab/scripts/topology-common.sh",
             support.INSTALL_ROOT / "physical/scripts/physical-common.sh",
+            support.INSTALL_ROOT / "web/index.html",
+            support.INSTALL_ROOT / "web/static/styles.css",
+            support.INSTALL_ROOT / "web/static/app.js",
         }
         self.assertTrue(required <= set(expected))
         helper = expected[support.HELPER_PATH][0].decode()
@@ -212,12 +276,45 @@ class ManagementSupportInstallTests(unittest.TestCase):
                 stat.S_IMODE((root / support.INSTALL_ROOT / "router/scripts/management_api.py").stat().st_mode),
                 0o755,
             )
+            self.assertEqual(stat.S_IMODE((root / support.INSTALL_ROOT / "web/index.html").stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE((root / support.INSTALL_ROOT / "web/static/app.js").stat().st_mode), 0o644)
             self.assertEqual(stat.S_IMODE((root / support.INSTALL_ROOT).stat().st_mode), 0o755)
             support.uninstall(root, expected)
             support.uninstall(root, expected)
             self.assertFalse((root / support.INSTALL_ROOT).exists())
             self.assertFalse((root / support.HELPER_PATH).exists())
             self.assertFalse((root / support.SUDOERS_PATH).exists())
+
+    def test_verify_rejects_missing_modified_and_symlinked_ui_assets(self) -> None:
+        expected = support.artifacts(ROOT)
+        asset = support.INSTALL_ROOT / "web/static/app.js"
+        for mutation in ("missing", "modified", "symlink"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                support.install(root, expected)
+                target = root / asset
+                if mutation == "missing":
+                    target.unlink()
+                elif mutation == "modified":
+                    target.write_text("modified", encoding="utf-8")
+                else:
+                    target.unlink()
+                    target.symlink_to(root / support.INSTALL_ROOT / "web/index.html")
+                with self.assertRaises(ValueError):
+                    support.verify(root, expected)
+
+    def test_frontend_is_offline_and_has_no_build_tooling(self) -> None:
+        html = (ROOT / "web/index.html").read_text(encoding="utf-8")
+        javascript = (ROOT / "web/static/app.js").read_text(encoding="utf-8")
+        self.assertNotIn("http://", html + javascript)
+        self.assertNotIn("https://", html + javascript)
+        self.assertNotIn("//cdn", html + javascript)
+        self.assertNotIn("innerHTML", javascript)
+        self.assertIn("Object.hasOwn(STATUS, value)", javascript)
+        for health_state in ("healthy", "degraded", "failed", "unknown", "disabled", "not_configured"):
+            self.assertEqual(javascript.count(f"  {health_state}: {{ label:"), 1)
+        for name in ("package.json", "package-lock.json", "node_modules", "vite.config.js", "webpack.config.js"):
+            self.assertFalse((ROOT / name).exists())
 
     def test_control_creates_only_dedicated_non_login_identity(self) -> None:
         control = (ROOT / "router/scripts/management-support-control.sh").read_text(encoding="utf-8")
